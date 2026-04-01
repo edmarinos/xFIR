@@ -24,7 +24,7 @@ data and the official MLB Stats API for daily game and starter updates.
 | Task | Model | Performance |
 |------|-------|-------------|
 | Did team score in 1st? | XGBoost Classifier | ROC-AUC: 0.521 |
-| How many runs? | Linear Regression | RMSE: 0.991 |
+| How many runs? | Linear Regression | RMSE: 1.045 |
 
 Both models are benchmarked against a naive baseline (always predict league 
 average). First inning scoring is highly stochastic — the models marginally 
