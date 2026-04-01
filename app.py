@@ -217,6 +217,35 @@ st.markdown(f"### {len(games)} Games Today")
 
 pitcher_options = ['League Average'] + sorted(pitchers_df['pitcher_name'].tolist())
 
+# Score each game by neither team scoring probability
+def score_game(game):
+    away = game['away_team']
+    home = game['home_team']
+    away_pitcher_raw = game['away_pitcher']
+    home_pitcher_raw = game['home_pitcher']
+
+    def match_pitcher(name):
+        if name == 'TBD':
+            return 'League Average'
+        matches = pitchers_df[
+            pitchers_df['pitcher_name'].str.lower() == name.lower()
+        ]
+        return matches.iloc[0]['pitcher_name'] if len(matches) > 0 else 'League Average'
+
+    away_matched = match_pitcher(away_pitcher_raw)
+    home_matched = match_pitcher(home_pitcher_raw)
+
+    away_stats = get_pitcher_stats(away_matched) if away_matched != 'League Average' else LEAGUE_AVG
+    home_stats = get_pitcher_stats(home_matched) if home_matched != 'League Average' else LEAGUE_AVG
+
+    away_prob, _ = predict(away, home, home_stats, is_home=False, month=month)
+    home_prob, _ = predict(home, away, away_stats, is_home=True, month=month)
+
+    return (1 - away_prob) * (1 - home_prob)
+
+# Sort games by scoreless probability descending
+games = sorted(games, key=score_game, reverse=True)
+
 for i, game in enumerate(games):
     away  = game['away_team']
     home  = game['home_team']
