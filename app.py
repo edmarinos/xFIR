@@ -18,18 +18,18 @@ st.set_page_config(
 @st.cache_resource
 def load_models():
     base = os.path.dirname(os.path.abspath(__file__))
-    classifier = joblib.load(os.path.join(base, 'models', 'xfir_classifier.pkl'))
-    regressor  = joblib.load(os.path.join(base, 'models', 'xfir_regressor.pkl'))
-    scaler     = joblib.load(os.path.join(base, 'models', 'scaler_v2.pkl'))
-    with open(os.path.join(base, 'models', 'features_v2.json')) as f:
+    classifier = joblib.load(os.path.join(base, 'xfir_classifier.pkl'))
+    regressor  = joblib.load(os.path.join(base, 'xfir_regressor.pkl'))
+    scaler     = joblib.load(os.path.join(base, 'scaler_v2.pkl'))
+    with open(os.path.join(base, 'features_v2.json')) as f:
         features = json.load(f)
     return classifier, regressor, scaler, features
 
 @st.cache_data
 def load_data():
     base = os.path.dirname(os.path.abspath(__file__))
-    pitchers = pd.read_csv(os.path.join(base, 'data', 'pitcher_list_2025.csv'))
-    teams    = pd.read_csv(os.path.join(base, 'data', 'team_offense_2025.csv'))
+    pitchers = pd.read_csv(os.path.join(base, 'pitcher_list_2025.csv'))
+    teams    = pd.read_csv(os.path.join(base, 'team_offense_2025.csv'))
     teams    = teams[teams['team'] != '- - -'].copy()
     return pitchers, teams
 
