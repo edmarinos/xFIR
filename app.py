@@ -353,4 +353,4 @@ for i, game in enumerate(games):
 st.markdown("---")
 st.markdown("**Model:** XGBoost (classification) | Linear Regression (regression) | "
             "**Data:** Statcast 2022–2024 | **Schedule:** MLB Stats API")
-st.markdown("**Classification AUC:** 0.521 | **Regression RMSE:** 0.991")
+st.markdown("**Classification AUC:** 0.521 | **Regression RMSE:** 1.045")
