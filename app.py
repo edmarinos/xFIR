@@ -142,8 +142,10 @@ def get_todays_games(selected_date):
             home_pitcher = home.get('probablePitcher', {}).get('fullName', 'TBD')
             game_time_utc = game.get('gameDate', '')
             try:
+                from zoneinfo import ZoneInfo
                 gt = datetime.fromisoformat(game_time_utc.replace('Z', '+00:00'))
-                game_time_str = gt.astimezone().strftime('%-I:%M %p')
+                est = ZoneInfo('America/New_York')
+                game_time_str = gt.astimezone(est).strftime('%-I:%M %p ET')
             except Exception:
                 game_time_str = 'TBD'
             games.append({
