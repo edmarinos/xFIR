@@ -350,6 +350,185 @@ for i, game in enumerate(games):
 
         st.caption("⚠️ For educational purposes only. Not financial or betting advice.")
 
+# ── Parlay Builder ────────────────────────────────────────────────────────────
+st.markdown("---")
+st.subheader("🎰 Parlay Builder")
+st.caption("Build a parlay using today's games. Your model probabilities are used to calculate true EV.")
+
+if 'num_legs' not in st.session_state:
+    st.session_state.num_legs = 2
+
+col_add, col_remove, _ = st.columns([1, 1, 4])
+with col_add:
+    if st.button("➕ Add Leg"):
+        st.session_state.num_legs += 1
+with col_remove:
+    if st.button("➖ Remove Leg") and st.session_state.num_legs > 2:
+        st.session_state.num_legs -= 1
+
+st.markdown(f"**{st.session_state.num_legs} Leg Parlay**")
+st.markdown("")
+
+# Game options for dropdown
+game_options = [
+    f"{g['away_name']} @ {g['home_name']} ({g['game_time']})"
+    for g in games
+]
+
+BET_TYPES = {
+    'NRFI (Neither team scores)': 'nrfi',
+    'YRFI (At least one team scores)': 'yrfi',
+    'Away team scores 1st inning': 'away_scores',
+    'Home team scores 1st inning': 'home_scores',
+}
+
+parlay_legs = []
+
+for leg_num in range(st.session_state.num_legs):
+    st.markdown(f"**Leg {leg_num + 1}**")
+    lc1, lc2, lc3 = st.columns([3, 2, 1])
+
+    with lc1:
+        selected_game = st.selectbox(
+            "Game",
+            options=game_options,
+            key=f"parlay_game_{leg_num}",
+            label_visibility="collapsed"
+        )
+
+    with lc2:
+        bet_type_label = st.selectbox(
+            "Bet Type",
+            options=list(BET_TYPES.keys()),
+            key=f"parlay_bet_{leg_num}",
+            label_visibility="collapsed"
+        )
+
+    with lc3:
+        leg_odds = st.number_input(
+            "Odds",
+            value=-110,
+            step=5,
+            key=f"parlay_odds_{leg_num}",
+            label_visibility="collapsed"
+        )
+
+    # Get the game object
+    game_idx = game_options.index(selected_game)
+    g = games[game_idx]
+    away = g['away_team']
+    home = g['home_team']
+
+    # Match pitchers
+    def match_pitcher_parlay(name):
+        if name == 'TBD':
+            return 'League Average'
+        matches = pitchers_df[
+            pitchers_df['pitcher_name'].str.lower() == name.lower()
+        ]
+        return matches.iloc[0]['pitcher_name'] if len(matches) > 0 else 'League Average'
+
+    away_pitcher_m = match_pitcher_parlay(g['away_pitcher'])
+    home_pitcher_m = match_pitcher_parlay(g['home_pitcher'])
+    away_stats_p = get_pitcher_stats(away_pitcher_m) if away_pitcher_m != 'League Average' else LEAGUE_AVG
+    home_stats_p = get_pitcher_stats(home_pitcher_m) if home_pitcher_m != 'League Average' else LEAGUE_AVG
+
+    away_prob_p, _ = predict(away, home, home_stats_p, is_home=False, month=month)
+    home_prob_p, _ = predict(home, away, away_stats_p, is_home=True,  month=month)
+
+    neither_p = (1 - away_prob_p) * (1 - home_prob_p)
+    either_p  = 1 - neither_p
+
+    bet_key = BET_TYPES[bet_type_label]
+    if bet_key == 'nrfi':
+        leg_prob = neither_p
+    elif bet_key == 'yrfi':
+        leg_prob = either_p
+    elif bet_key == 'away_scores':
+        leg_prob = away_prob_p
+    else:
+        leg_prob = home_prob_p
+
+    parlay_legs.append({
+        'game': selected_game,
+        'bet': bet_type_label,
+        'odds': leg_odds,
+        'prob': leg_prob
+    })
+
+    # Show individual leg probability
+    st.caption(f"Model probability for this leg: **{leg_prob:.1%}**")
+    st.markdown("")
+
+# ── Parlay Results ────────────────────────────────────────────────────────────
+if len(parlay_legs) >= 2:
+    st.markdown("---")
+    st.markdown("### 📊 Parlay Summary")
+
+    # True parlay probability (model)
+    true_parlay_prob = 1.0
+    for leg in parlay_legs:
+        true_parlay_prob *= leg['prob']
+
+    # Parlay payout calculation
+    def american_to_decimal(odds):
+        if odds > 0:
+            return (odds / 100) + 1
+        else:
+            return (100 / abs(odds)) + 1
+
+    decimal_odds = [american_to_decimal(leg['odds']) for leg in parlay_legs]
+    parlay_decimal = 1.0
+    for d in decimal_odds:
+        parlay_decimal *= d
+
+    parlay_payout = parlay_decimal - 1  # profit per $1 wagered
+    parlay_american = int((parlay_payout * 100)) if parlay_payout >= 1 \
+                      else int(-100 / parlay_payout)
+
+    # EV
+    parlay_ev = (true_parlay_prob * parlay_payout) - (1 - true_parlay_prob)
+    parlay_ev_pct = parlay_ev * 100
+
+    # Implied probability from combined odds
+    implied_parlay_prob = 1 / parlay_decimal
+
+    pc1, pc2, pc3, pc4 = st.columns(4)
+    with pc1:
+        st.metric("True Parlay Probability", f"{true_parlay_prob:.2%}")
+    with pc2:
+        st.metric("Implied Probability", f"{implied_parlay_prob:.2%}")
+    with pc3:
+        st.metric("Combined Odds", f"+{parlay_american}" if parlay_american > 0 else str(parlay_american))
+    with pc4:
+        st.metric(
+            "EV per $100",
+            f"${parlay_ev * 100:.2f}",
+            delta="Profitable" if parlay_ev > 0 else "Unprofitable",
+            delta_color="normal" if parlay_ev > 0 else "inverse"
+        )
+
+    # Leg breakdown table
+    st.markdown("**Leg Breakdown:**")
+    leg_df = pd.DataFrame([{
+        'Game': leg['game'].split('(')[0].strip(),
+        'Bet': leg['bet'],
+        'Odds': leg['odds'],
+        'Model Prob': f"{leg['prob']:.1%}",
+        'Implied Prob': f"{american_to_implied(leg['odds']):.1%}",
+        'Leg Edge': f"{(leg['prob'] - american_to_implied(leg['odds'])):+.1%}"
+    } for leg in parlay_legs])
+    st.dataframe(leg_df, use_container_width=True, hide_index=True)
+
+    if parlay_ev > 0.05:
+        st.success(f"✅ Strong +EV parlay. True probability ({true_parlay_prob:.2%}) exceeds implied ({implied_parlay_prob:.2%}).")
+    elif parlay_ev > 0:
+        st.info(f"📊 Slight +EV parlay ({parlay_ev_pct:.1f}%). Marginal edge.")
+    else:
+        st.warning(f"⚠️ Negative EV parlay ({parlay_ev_pct:.1f}%). The vig is eating your edge across legs.")
+
+    st.caption("⚠️ For educational purposes only. Not financial or betting advice.")
+
 st.markdown("---")
 st.markdown("**Model:** XGBoost (classification) | Linear Regression (regression) | "
             "**Data:** Statcast 2022–2024 | **Schedule:** MLB Stats API")
