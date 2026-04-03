@@ -238,18 +238,28 @@ def fetch_game_linescore(game_pk):
 
 def save_predictions_to_db(games, predictions_by_game):
     today = date.today().isoformat()
-    selected = str(games[0].get('game_date', today)) if games else today
     
-    # Only save predictions for today's actual games
+    # Only save for today
     if str(selected_date) != today:
         return
-        
-    rows = []
+
     for g in games:
         pk = str(g['game_pk'])
-        if pk in predictions_by_game:
-            pred = predictions_by_game[pk]
-            rows.append({
+        if pk not in predictions_by_game:
+            continue
+        pred = predictions_by_game[pk]
+        try:
+            # Check if row already exists
+            existing = supabase.table('predictions')\
+                .select('id')\
+                .eq('game_date', today)\
+                .eq('game_pk', pk)\
+                .execute()
+            
+            if len(existing.data) > 0:
+                continue  # Skip — already saved
+                
+            supabase.table('predictions').insert({
                 'game_date':       today,
                 'game_pk':         pk,
                 'away_team':       g['away_team'],
@@ -261,14 +271,9 @@ def save_predictions_to_db(games, predictions_by_game):
                 'yrfi_prob':       float(round(pred['yrfi_prob'], 4)),
                 'outcome_nrfi':    None,
                 'outcome_fetched': False
-            })
-    if rows:
-        try:
-            supabase.table('predictions').upsert(
-                rows, on_conflict='game_date,game_pk'
-            ).execute()
+            }).execute()
         except Exception as e:
-            st.warning(f"Could not save predictions: {e}")
+            pass  # Silently skip duplicates
 
 def fetch_and_update_outcomes():
     try:
