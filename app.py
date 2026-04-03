@@ -6,6 +6,121 @@ import json
 import os
 import requests
 from datetime import date, datetime, timezone
+from supabase import create_client
+
+# ── Supabase connection ───────────────────────────────────────────────────────
+@st.cache_resource
+def get_supabase():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+supabase = get_supabase()
+
+# ── Database functions ────────────────────────────────────────────────────────
+def save_predictions_to_db(games, predictions_by_game):
+    """Save today's predictions — skips duplicates via UNIQUE constraint"""
+    today = date.today().isoformat()
+    rows = []
+    for g in games:
+        pk = str(g['game_pk'])
+        if pk in predictions_by_game:
+            pred = predictions_by_game[pk]
+            rows.append({
+                'game_date': today,
+                'game_pk': pk,
+                'away_team': g['away_team'],
+                'home_team': g['home_team'],
+                'away_pitcher': g['away_pitcher'],
+                'home_pitcher': g['home_pitcher'],
+                'game_time': g['game_time'],
+                'nrfi_prob': round(pred['nrfi_prob'], 4),
+                'yrfi_prob': round(pred['yrfi_prob'], 4),
+                'outcome_nrfi': None,
+                'outcome_fetched': False
+            })
+    if rows:
+        try:
+            supabase.table('predictions').upsert(
+                rows, on_conflict='game_date,game_pk'
+            ).execute()
+        except Exception as e:
+            st.warning(f"Could not save predictions: {e}")
+
+def fetch_and_update_outcomes():
+    """Auto-fetch outcomes for completed games"""
+    try:
+        pending = supabase.table('predictions')\
+            .select('*')\
+            .eq('outcome_fetched', False)\
+            .execute()
+
+        for row in pending.data:
+            result = fetch_game_linescore(row['game_pk'])
+            if result and result['is_final']:
+                supabase.table('predictions')\
+                    .update({
+                        'outcome_nrfi': result['nrfi'],
+                        'away_runs_1st': result['away_runs_1st'],
+                        'home_runs_1st': result['home_runs_1st'],
+                        'outcome_fetched': True
+                    })\
+                    .eq('id', row['id'])\
+                    .execute()
+    except Exception as e:
+        st.warning(f"Could not fetch outcomes: {e}")
+
+def manual_override(game_pk, game_date, nrfi_result):
+    """Manually set outcome for a game"""
+    try:
+        supabase.table('predictions')\
+            .update({
+                'outcome_nrfi': nrfi_result,
+                'outcome_fetched': True,
+                'manually_overridden': True
+            })\
+            .eq('game_pk', str(game_pk))\
+            .eq('game_date', game_date)\
+            .execute()
+        st.success("Outcome saved.")
+    except Exception as e:
+        st.error(f"Could not save outcome: {e}")
+
+def load_results():
+    """Load all predictions with outcomes for dashboard"""
+    try:
+        result = supabase.table('predictions')\
+            .select('*')\
+            .not_.is_('outcome_nrfi', 'null')\
+            .order('game_date', desc=True)\
+            .execute()
+        return pd.DataFrame(result.data)
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def fetch_game_linescore(game_pk):
+    url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
+    try:
+        data = requests.get(url, timeout=10).json()
+        innings = data.get('innings', [])
+        if not innings:
+            return None
+        first_inning = innings[0]
+        away_runs = first_inning.get('away', {}).get('runs', None)
+        home_runs = first_inning.get('home', {}).get('runs', None)
+        current_inning = data.get('currentInning', 0)
+        is_final = current_inning >= 9 and not data.get('isTopInning', True)
+        return {
+            'away_runs_1st': away_runs,
+            'home_runs_1st': home_runs,
+            'total_runs_1st': (away_runs or 0) + (home_runs or 0),
+            'nrfi': ((away_runs or 0) + (home_runs or 0)) == 0,
+            'is_final': is_final,
+            'current_inning': current_inning
+        }
+    except Exception:
+        return None
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -208,6 +323,43 @@ st.markdown("---")
 
 games = get_todays_games(selected_date)
 month = selected_date.month
+
+# ── Collect predictions for storage ──────────────────────────────────────────
+predictions_by_game = {}
+for g in games:
+    away = g['away_team']
+    home = g['home_team']
+
+    def match_pitcher_storage(name):
+        if name == 'TBD':
+            return 'League Average'
+        matches = pitchers_df[
+            pitchers_df['pitcher_name'].str.lower() == name.lower()
+        ]
+        return matches.iloc[0]['pitcher_name'] if len(matches) > 0 else 'League Average'
+
+    ap = match_pitcher_storage(g['away_pitcher'])
+    hp = match_pitcher_storage(g['home_pitcher'])
+    a_stats = get_pitcher_stats(ap) if ap != 'League Average' else LEAGUE_AVG
+    h_stats = get_pitcher_stats(hp) if hp != 'League Average' else LEAGUE_AVG
+
+    away_p, _ = predict(away, home, h_stats, is_home=False, month=month)
+    home_p, _ = predict(home, away, a_stats, is_home=True, month=month)
+    neither = (1 - away_p) * (1 - home_p)
+
+    predictions_by_game[str(g['game_pk'])] = {
+        'nrfi_prob': neither,
+        'yrfi_prob': 1 - neither
+    }
+
+# Save to Supabase and auto-fetch any completed outcomes
+save_predictions_to_db(games, predictions_by_game)
+fetch_and_update_outcomes()
+
+if not games:
+    st.warning("No games found for today. The MLB schedule may not be loaded yet.")
+    st.stop()
+
 
 if not games:
     st.warning("No games found for today. The MLB schedule may not be loaded yet.")
@@ -529,6 +681,26 @@ if len(parlay_legs) >= 2:
 
     st.caption("⚠️ For educational purposes only. Not financial or betting advice.")
 
+st.markdown("---")
+
+tab1, tab2, tab3 = st.tabs(["📅 Today's Games", "🎰 Parlay Builder", "📊 Model Results"])
+
+with tab1:
+    st.markdown(f"### {len(games)} Games Today")
+    
+    # YOUR ENTIRE EXISTING GAME LOOP GOES HERE
+    # (the for i, game in enumerate(games): block and everything inside it)
+
+with tab2:
+    st.subheader("🎰 Parlay Builder")
+    # YOUR ENTIRE EXISTING PARLAY BUILDER CODE GOES HERE
+
+with tab3:
+    st.subheader("📊 Model Performance Dashboard")
+    st.caption("Tracking NRFI/YRFI predictions vs actual outcomes.")
+    # THE RESULTS DASHBOARD CODE GOES HERE
+
+# Footer stays outside tabs
 st.markdown("---")
 st.markdown("**Model:** XGBoost (classification) | Linear Regression (regression) | "
             "**Data:** Statcast 2022–2024 | **Schedule:** MLB Stats API")
