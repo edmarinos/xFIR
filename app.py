@@ -697,11 +697,12 @@ with tab3:
         st.markdown("#### ✏️ Manual Override")
         st.caption("Use this if auto-fetch missed a game result.")
         try:
+            today_str = date.today().isoformat()
             pending_df = pd.DataFrame(
                 supabase.table('predictions')
                 .select('*')
                 .eq('outcome_fetched', False)
-                .eq('game_date', selected_date.isoformat())
+                .lt('game_date', today_str)
                 .execute().data
             )
         except Exception:
