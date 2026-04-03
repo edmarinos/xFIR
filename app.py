@@ -315,13 +315,15 @@ def manual_override(game_pk, game_date, nrfi_result):
     except Exception as e:
         st.error(f"Could not save outcome: {e}")
 
-def load_results():
+def load_results(selected_date=None):
     try:
-        result = supabase.table('predictions')\
+        query = supabase.table('predictions')\
             .select('*')\
             .not_.is_('outcome_nrfi', 'null')\
-            .order('game_date', desc=True)\
-            .execute()
+            .order('game_date', desc=True)
+        if selected_date:
+            query = query.eq('game_date', selected_date.isoformat())
+        result = query.execute()
         return pd.DataFrame(result.data)
     except Exception:
         return pd.DataFrame()
@@ -647,7 +649,7 @@ with tab3:
     st.subheader("📊 Model Performance Dashboard")
     st.caption("Tracking NRFI/YRFI predictions vs actual outcomes.")
 
-    results_df = load_results()
+    results_df = load_results(selected_date)
 
     if results_df.empty:
         st.info("No completed game results yet. Check back after today's games finish.")
@@ -703,6 +705,7 @@ with tab3:
                 supabase.table('predictions')
                 .select('*')
                 .eq('outcome_fetched', False)
+                .eq('game_date', selected_date.isoformat())
                 .execute().data
             )
         except Exception:
