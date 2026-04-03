@@ -5,7 +5,7 @@ import joblib
 import json
 import os
 import requests
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from supabase import create_client
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -258,18 +258,45 @@ def fetch_and_update_outcomes():
             .select('*')\
             .eq('outcome_fetched', False)\
             .execute()
+
+        now_utc = datetime.now(timezone.utc)
+
         for row in pending.data:
+            # Only fetch outcomes for games that started more than 3 hours ago
+            try:
+                game_date = row['game_date']
+                game_time_str = row['game_time']
+
+                # Skip if game time is TBD or can't be parsed
+                if not game_time_str or game_time_str == 'TBD':
+                    continue
+
+                # Parse stored game time — compare against current UTC time
+                # We stored it as EST display string so use game_date + 3hr buffer
+                game_dt = datetime.strptime(
+                    f"{game_date}", '%Y-%m-%d'
+                ).replace(tzinfo=timezone.utc)
+
+                # Only process yesterday's or older games, or today's if 4+ hours have passed
+                hours_since_midnight = (now_utc - game_dt).total_seconds() / 3600
+                if hours_since_midnight < 4:
+                    continue
+
+            except Exception:
+                continue
+
             result = fetch_game_linescore(row['game_pk'])
             if result and result['is_final']:
                 supabase.table('predictions')\
                     .update({
-                        'outcome_nrfi':   result['nrfi'],
-                        'away_runs_1st':  result['away_runs_1st'],
-                        'home_runs_1st':  result['home_runs_1st'],
+                        'outcome_nrfi':    result['nrfi'],
+                        'away_runs_1st':   result['away_runs_1st'],
+                        'home_runs_1st':   result['home_runs_1st'],
                         'outcome_fetched': True
                     })\
                     .eq('id', row['id'])\
                     .execute()
+
     except Exception as e:
         st.warning(f"Could not fetch outcomes: {e}")
 
