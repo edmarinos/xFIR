@@ -5,122 +5,8 @@ import joblib
 import json
 import os
 import requests
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from supabase import create_client
-
-# ── Supabase connection ───────────────────────────────────────────────────────
-@st.cache_resource
-def get_supabase():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
-
-supabase = get_supabase()
-
-# ── Database functions ────────────────────────────────────────────────────────
-def save_predictions_to_db(games, predictions_by_game):
-    """Save today's predictions — skips duplicates via UNIQUE constraint"""
-    today = date.today().isoformat()
-    rows = []
-    for g in games:
-        pk = str(g['game_pk'])
-        if pk in predictions_by_game:
-            pred = predictions_by_game[pk]
-            rows.append({
-                'game_date': today,
-                'game_pk': pk,
-                'away_team': g['away_team'],
-                'home_team': g['home_team'],
-                'away_pitcher': g['away_pitcher'],
-                'home_pitcher': g['home_pitcher'],
-                'game_time': g['game_time'],
-                'nrfi_prob': float(round(pred['nrfi_prob'], 4)),
-                'yrfi_prob': float(round(pred['yrfi_prob'], 4)),
-                'outcome_nrfi': None,
-                'outcome_fetched': False
-            })
-    if rows:
-        try:
-            supabase.table('predictions').upsert(
-                rows, on_conflict='game_date,game_pk'
-            ).execute()
-        except Exception as e:
-            st.warning(f"Could not save predictions: {e}")
-
-def fetch_and_update_outcomes():
-    """Auto-fetch outcomes for completed games"""
-    try:
-        pending = supabase.table('predictions')\
-            .select('*')\
-            .eq('outcome_fetched', False)\
-            .execute()
-
-        for row in pending.data:
-            result = fetch_game_linescore(row['game_pk'])
-            if result and result['is_final']:
-                supabase.table('predictions')\
-                    .update({
-                        'outcome_nrfi': result['nrfi'],
-                        'away_runs_1st': result['away_runs_1st'],
-                        'home_runs_1st': result['home_runs_1st'],
-                        'outcome_fetched': True
-                    })\
-                    .eq('id', row['id'])\
-                    .execute()
-    except Exception as e:
-        st.warning(f"Could not fetch outcomes: {e}")
-
-def manual_override(game_pk, game_date, nrfi_result):
-    """Manually set outcome for a game"""
-    try:
-        supabase.table('predictions')\
-            .update({
-                'outcome_nrfi': nrfi_result,
-                'outcome_fetched': True,
-                'manually_overridden': True
-            })\
-            .eq('game_pk', str(game_pk))\
-            .eq('game_date', game_date)\
-            .execute()
-        st.success("Outcome saved.")
-    except Exception as e:
-        st.error(f"Could not save outcome: {e}")
-
-def load_results():
-    """Load all predictions with outcomes for dashboard"""
-    try:
-        result = supabase.table('predictions')\
-            .select('*')\
-            .not_.is_('outcome_nrfi', 'null')\
-            .order('game_date', desc=True)\
-            .execute()
-        return pd.DataFrame(result.data)
-    except Exception:
-        return pd.DataFrame()
-
-@st.cache_data(ttl=300)
-def fetch_game_linescore(game_pk):
-    url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
-    try:
-        data = requests.get(url, timeout=10).json()
-        innings = data.get('innings', [])
-        if not innings:
-            return None
-        first_inning = innings[0]
-        away_runs = first_inning.get('away', {}).get('runs', None)
-        home_runs = first_inning.get('home', {}).get('runs', None)
-        current_inning = data.get('currentInning', 0)
-        is_final = current_inning >= 9 and not data.get('isTopInning', True)
-        return {
-            'away_runs_1st': away_runs,
-            'home_runs_1st': home_runs,
-            'total_runs_1st': (away_runs or 0) + (home_runs or 0),
-            'nrfi': ((away_runs or 0) + (home_runs or 0)) == 0,
-            'is_final': is_final,
-            'current_inning': current_inning
-        }
-    except Exception:
-        return None
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -129,7 +15,16 @@ st.set_page_config(
     layout="wide"
 )
 
-# ── Load models and data ──────────────────────────────────────────────────────
+# ── Supabase ──────────────────────────────────────────────────────────────────
+@st.cache_resource
+def get_supabase():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+supabase = get_supabase()
+
+# ── Load models ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_models():
     base = os.path.dirname(os.path.abspath(__file__))
@@ -153,12 +48,12 @@ pitchers_df, teams_df = load_data()
 
 # ── Static data ───────────────────────────────────────────────────────────────
 PARK_FACTORS = {
-    'COL': 115, 'CIN': 108, 'BOS': 106, 'TEX': 105, 'PHI': 104,
-    'MIL': 104, 'NYY': 103, 'BAL': 103, 'ATL': 103, 'HOU': 102,
-    'STL': 102, 'LAD': 101, 'TOR': 101, 'ARI': 100, 'MIN': 100,
-    'SEA': 99,  'DET': 99,  'NYM': 99,  'SDP': 98,  'MIA': 98,
-    'SF':  97,  'PIT': 97,  'CHC': 97,  'LAA': 96,  'KCR': 96,
-    'CLE': 95,  'TBR': 95,  'ATH': 94,  'CHW': 93,  'WSN': 92,
+    'COL': 115, 'ATH': 112, 'CIN': 108, 'BAL': 107, 'DET': 106,
+    'LAD': 106, 'BOS': 105, 'TOR': 105, 'KCR': 105, 'MIL': 104,
+    'PHI': 104, 'MIN': 103, 'NYY': 103, 'ATL': 102, 'HOU': 102,
+    'STL': 99,  'PIT': 98,  'MIA': 98,  'CHC': 97,  'NYM': 97,
+    'SDP': 97,  'LAA': 96,  'SF':  96,  'ARI': 100, 'CLE': 95,
+    'WSN': 95,  'CHW': 94,  'TBR': 94,  'SEA': 93,  'TEX': 93,
 }
 
 TEAM_NAMES = {
@@ -202,10 +97,10 @@ def get_pitcher_stats(pitcher_name):
     if len(row) == 0:
         return LEAGUE_AVG
     r = row.iloc[0]
-    return {k: r[k] for k in ['sp_ERA','sp_FIP','sp_xFIP','sp_SIERA',
-                                'sp_K%','sp_BB%','sp_K-BB%','sp_WHIP',
-                                'sp_HR/9','sp_GB%','sp_SwStr%','sp_CSW%',
-                                'sp_HardHit%','sp_xERA']}
+    return {k: r[k] for k in ['sp_ERA', 'sp_FIP', 'sp_xFIP', 'sp_SIERA',
+                                'sp_K%', 'sp_BB%', 'sp_K-BB%', 'sp_WHIP',
+                                'sp_HR/9', 'sp_GB%', 'sp_SwStr%', 'sp_CSW%',
+                                'sp_HardHit%', 'sp_xERA']}
 
 def predict(batting_team, pitching_team, pitcher_stats, is_home, month):
     offense = get_team_offense(batting_team)
@@ -233,10 +128,39 @@ def american_to_implied(odds):
     else:
         return abs(odds) / (abs(odds) + 100)
 
+def american_to_decimal(odds):
+    if odds > 0:
+        return (odds / 100) + 1
+    else:
+        return (100 / abs(odds)) + 1
+
 def calculate_ev(prob, odds):
     profit = odds / 100 if odds > 0 else 100 / abs(odds)
     return (prob * profit) - ((1 - prob) * 1)
 
+def match_pitcher(name):
+    if name == 'TBD':
+        return 'League Average'
+    matches = pitchers_df[
+        pitchers_df['pitcher_name'].str.lower() == name.lower()
+    ]
+    return matches.iloc[0]['pitcher_name'] if len(matches) > 0 else 'League Average'
+
+def pitcher_stats_table(stats):
+    return f"""
+| Stat | Value |
+|------|-------|
+| ERA | {stats['sp_ERA']:.2f} |
+| FIP | {stats['sp_FIP']:.2f} |
+| xFIP | {stats['sp_xFIP']:.2f} |
+| K% | {stats['sp_K%']:.1%} |
+| BB% | {stats['sp_BB%']:.1%} |
+| WHIP | {stats['sp_WHIP']:.2f} |
+| HardHit% | {stats['sp_HardHit%']:.1%} |
+| SwStr% | {stats['sp_SwStr%']:.1%} |
+"""
+
+# ── MLB API ───────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800)
 def get_todays_games(selected_date):
     url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={selected_date}&hydrate=probablePitcher"
@@ -275,26 +199,111 @@ def get_todays_games(selected_date):
             })
     return games
 
-def pitcher_stats_table(stats):
-    return f"""
-| Stat | Value |
-|------|-------|
-| ERA | {stats['sp_ERA']:.2f} |
-| FIP | {stats['sp_FIP']:.2f} |
-| xFIP | {stats['sp_xFIP']:.2f} |
-| K% | {stats['sp_K%']:.1%} |
-| BB% | {stats['sp_BB%']:.1%} |
-| WHIP | {stats['sp_WHIP']:.2f} |
-| HardHit% | {stats['sp_HardHit%']:.1%} |
-| SwStr% | {stats['sp_SwStr%']:.1%} |
-"""
+# ── Supabase functions ────────────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def fetch_game_linescore(game_pk):
+    url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
+    try:
+        data = requests.get(url, timeout=10).json()
+        innings = data.get('innings', [])
+        if not innings:
+            return None
+        first_inning = innings[0]
+        away_runs = first_inning.get('away', {}).get('runs', None)
+        home_runs = first_inning.get('home', {}).get('runs', None)
+        current_inning = data.get('currentInning', 0)
+        is_final = current_inning >= 9 and not data.get('isTopInning', True)
+        return {
+            'away_runs_1st': away_runs,
+            'home_runs_1st': home_runs,
+            'total_runs_1st': (away_runs or 0) + (home_runs or 0),
+            'nrfi': ((away_runs or 0) + (home_runs or 0)) == 0,
+            'is_final': is_final,
+            'current_inning': current_inning
+        }
+    except Exception:
+        return None
+
+def save_predictions_to_db(games, predictions_by_game):
+    today = date.today().isoformat()
+    rows = []
+    for g in games:
+        pk = str(g['game_pk'])
+        if pk in predictions_by_game:
+            pred = predictions_by_game[pk]
+            rows.append({
+                'game_date':      today,
+                'game_pk':        pk,
+                'away_team':      g['away_team'],
+                'home_team':      g['home_team'],
+                'away_pitcher':   g['away_pitcher'],
+                'home_pitcher':   g['home_pitcher'],
+                'game_time':      g['game_time'],
+                'nrfi_prob':      float(round(pred['nrfi_prob'], 4)),
+                'yrfi_prob':      float(round(pred['yrfi_prob'], 4)),
+                'outcome_nrfi':   None,
+                'outcome_fetched': False
+            })
+    if rows:
+        try:
+            supabase.table('predictions').upsert(
+                rows, on_conflict='game_date,game_pk'
+            ).execute()
+        except Exception as e:
+            st.warning(f"Could not save predictions: {e}")
+
+def fetch_and_update_outcomes():
+    try:
+        pending = supabase.table('predictions')\
+            .select('*')\
+            .eq('outcome_fetched', False)\
+            .execute()
+        for row in pending.data:
+            result = fetch_game_linescore(row['game_pk'])
+            if result and result['is_final']:
+                supabase.table('predictions')\
+                    .update({
+                        'outcome_nrfi':   result['nrfi'],
+                        'away_runs_1st':  result['away_runs_1st'],
+                        'home_runs_1st':  result['home_runs_1st'],
+                        'outcome_fetched': True
+                    })\
+                    .eq('id', row['id'])\
+                    .execute()
+    except Exception as e:
+        st.warning(f"Could not fetch outcomes: {e}")
+
+def manual_override(game_pk, game_date, nrfi_result):
+    try:
+        supabase.table('predictions')\
+            .update({
+                'outcome_nrfi':        nrfi_result,
+                'outcome_fetched':     True,
+                'manually_overridden': True
+            })\
+            .eq('game_pk', str(game_pk))\
+            .eq('game_date', game_date)\
+            .execute()
+        st.success("Outcome saved.")
+    except Exception as e:
+        st.error(f"Could not save outcome: {e}")
+
+def load_results():
+    try:
+        result = supabase.table('predictions')\
+            .select('*')\
+            .not_.is_('outcome_nrfi', 'null')\
+            .order('game_date', desc=True)\
+            .execute()
+        return pd.DataFrame(result.data)
+    except Exception:
+        return pd.DataFrame()
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 st.title("⚾ xFIR — Expected First Inning Runs")
 st.markdown("Today's MLB games with first inning scoring predictions and EV calculator.")
 
-
-# ── Date selector ─────────────────────────────────────────────────────────────
+# Date selector
 col_prev, col_date, col_next = st.columns([1, 3, 1])
 
 if 'selected_date' not in st.session_state:
@@ -316,7 +325,6 @@ with col_next:
         st.session_state.selected_date += __import__('datetime').timedelta(days=1)
 
 selected_date = st.session_state.selected_date
-
 today_str = selected_date.strftime('%A, %B %d %Y')
 st.markdown(f"**{today_str}**")
 st.markdown("---")
@@ -324,35 +332,23 @@ st.markdown("---")
 games = get_todays_games(selected_date)
 month = selected_date.month
 
-# ── Collect predictions for storage ──────────────────────────────────────────
+# Collect and save predictions
 predictions_by_game = {}
 for g in games:
     away = g['away_team']
     home = g['home_team']
-
-    def match_pitcher_storage(name):
-        if name == 'TBD':
-            return 'League Average'
-        matches = pitchers_df[
-            pitchers_df['pitcher_name'].str.lower() == name.lower()
-        ]
-        return matches.iloc[0]['pitcher_name'] if len(matches) > 0 else 'League Average'
-
-    ap = match_pitcher_storage(g['away_pitcher'])
-    hp = match_pitcher_storage(g['home_pitcher'])
+    ap = match_pitcher(g['away_pitcher'])
+    hp = match_pitcher(g['home_pitcher'])
     a_stats = get_pitcher_stats(ap) if ap != 'League Average' else LEAGUE_AVG
     h_stats = get_pitcher_stats(hp) if hp != 'League Average' else LEAGUE_AVG
-
     away_p, _ = predict(away, home, h_stats, is_home=False, month=month)
     home_p, _ = predict(home, away, a_stats, is_home=True, month=month)
     neither = (1 - away_p) * (1 - home_p)
-
     predictions_by_game[str(g['game_pk'])] = {
         'nrfi_prob': neither,
         'yrfi_prob': 1 - neither
     }
 
-# Save to Supabase and auto-fetch any completed outcomes
 save_predictions_to_db(games, predictions_by_game)
 fetch_and_update_outcomes()
 
@@ -360,345 +356,346 @@ if not games:
     st.warning("No games found for today. The MLB schedule may not be loaded yet.")
     st.stop()
 
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3 = st.tabs(["📅 Today's Games", "🎰 Parlay Builder", "📊 Model Results"])
 
-if not games:
-    st.warning("No games found for today. The MLB schedule may not be loaded yet.")
-    st.stop()
+# ── Tab 1: Today's Games ──────────────────────────────────────────────────────
+with tab1:
+    st.markdown(f"### {len(games)} Games Today")
+    pitcher_options = ['League Average'] + sorted(pitchers_df['pitcher_name'].tolist())
 
-st.markdown(f"### {len(games)} Games Today")
+    for i, game in enumerate(games):
+        away      = game['away_team']
+        home      = game['home_team']
+        away_name = game['away_name']
+        home_name = game['home_name']
+        game_time = game['game_time']
 
-pitcher_options = ['League Average'] + sorted(pitchers_df['pitcher_name'].tolist())
+        away_pitcher_matched = match_pitcher(game['away_pitcher'])
+        home_pitcher_matched = match_pitcher(game['home_pitcher'])
 
-for i, game in enumerate(games):
-    away  = game['away_team']
-    home  = game['home_team']
-    away_name = game['away_name']
-    home_name = game['home_name']
-    game_time = game['game_time']
+        with st.expander(
+            f"⚾ {away_name} @ {home_name}  —  {game_time}  |  "
+            f"{game['away_pitcher']} vs {game['home_pitcher']}",
+            expanded=(i == 0)
+        ):
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                away_pitcher_sel = st.selectbox(
+                    f"✈️ Away Starter ({away})",
+                    options=pitcher_options,
+                    index=pitcher_options.index(away_pitcher_matched)
+                          if away_pitcher_matched in pitcher_options else 0,
+                    key=f"away_p_{i}"
+                )
+            with col_p2:
+                home_pitcher_sel = st.selectbox(
+                    f"🏠 Home Starter ({home})",
+                    options=pitcher_options,
+                    index=pitcher_options.index(home_pitcher_matched)
+                          if home_pitcher_matched in pitcher_options else 0,
+                    key=f"home_p_{i}"
+                )
 
-    # Match pitcher names to our database
-    away_pitcher_raw = game['away_pitcher']
-    home_pitcher_raw = game['home_pitcher']
+            away_stats = get_pitcher_stats(away_pitcher_sel) \
+                         if away_pitcher_sel != 'League Average' else LEAGUE_AVG
+            home_stats = get_pitcher_stats(home_pitcher_sel) \
+                         if home_pitcher_sel != 'League Average' else LEAGUE_AVG
 
-    # Try to find pitcher in our list (case-insensitive)
-    def match_pitcher(name):
-        if name == 'TBD':
-            return 'League Average'
-        matches = pitchers_df[
-            pitchers_df['pitcher_name'].str.lower() == name.lower()
-        ]
-        return matches.iloc[0]['pitcher_name'] if len(matches) > 0 else 'League Average'
+            away_prob, away_runs = predict(away, home, home_stats, is_home=False, month=month)
+            home_prob, home_runs = predict(home, away, away_stats, is_home=True,  month=month)
+            neither_prob = (1 - away_prob) * (1 - home_prob)
+            either_prob  = 1 - neither_prob
 
-    away_pitcher_matched = match_pitcher(away_pitcher_raw)
-    home_pitcher_matched = match_pitcher(home_pitcher_raw)
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                emoji = "🟢" if away_prob >= 0.30 else "🟡" if away_prob >= 0.25 else "🔴"
+                st.metric(f"{emoji} {away} Score (Top 1st)",
+                          f"{away_prob:.1%}", f"xRuns: {away_runs:.3f}")
+            with c2:
+                emoji = "🟢" if home_prob >= 0.30 else "🟡" if home_prob >= 0.25 else "🔴"
+                st.metric(f"{emoji} {home} Score (Bot 1st)",
+                          f"{home_prob:.1%}", f"xRuns: {home_runs:.3f}")
+            with c3:
+                emoji = "🟢" if neither_prob >= 0.53 else "🔴"
+                st.metric(f"{emoji} Scoreless 1st", f"{neither_prob:.1%}",
+                          f"Either scores: {either_prob:.1%}")
 
-    with st.expander(
-        f"⚾ {away_name} @ {home_name}  —  {game_time}  |  "
-        f"{away_pitcher_raw} vs {home_pitcher_raw}",
-        expanded=(i == 0)
-    ):
-        # Pitcher overrides
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            away_pitcher_sel = st.selectbox(
-                f"✈️ Away Starter ({away})",
-                options=pitcher_options,
-                index=pitcher_options.index(away_pitcher_matched)
-                      if away_pitcher_matched in pitcher_options else 0,
-                key=f"away_p_{i}"
+            with st.expander("📋 Pitcher Stats"):
+                ps1, ps2 = st.columns(2)
+                with ps1:
+                    st.markdown(f"**{home_pitcher_sel}** (pitching to {away})")
+                    st.markdown(pitcher_stats_table(home_stats))
+                with ps2:
+                    st.markdown(f"**{away_pitcher_sel}** (pitching to {home})")
+                    st.markdown(pitcher_stats_table(away_stats))
+
+            st.markdown("#### 💰 EV Calculator")
+            ev1, ev2 = st.columns(2)
+
+            with ev1:
+                st.markdown("**Scoreless 1st Inning (NRFI)**")
+                odds_scoreless = st.number_input(
+                    "Sportsbook Odds", value=-110, step=5,
+                    key=f"odds_scoreless_{i}"
+                )
+                implied_s = american_to_implied(odds_scoreless)
+                ev_s      = calculate_ev(neither_prob, odds_scoreless)
+                edge_s    = neither_prob - implied_s
+                st.metric("Model Prob",   f"{neither_prob:.1%}")
+                st.metric("Implied Prob", f"{implied_s:.1%}",
+                          delta=f"Edge: {edge_s:+.1%}")
+                st.metric("EV per $100",  f"${ev_s * 100:.2f}",
+                          delta="Profitable" if ev_s > 0 else "Unprofitable",
+                          delta_color="normal" if ev_s > 0 else "inverse")
+
+            with ev2:
+                st.markdown("**At Least One Team Scores (YRFI)**")
+                odds_scoring = st.number_input(
+                    "Sportsbook Odds", value=-110, step=5,
+                    key=f"odds_scoring_{i}"
+                )
+                implied_e = american_to_implied(odds_scoring)
+                ev_e      = calculate_ev(either_prob, odds_scoring)
+                edge_e    = either_prob - implied_e
+                st.metric("Model Prob",   f"{either_prob:.1%}")
+                st.metric("Implied Prob", f"{implied_e:.1%}",
+                          delta=f"Edge: {edge_e:+.1%}")
+                st.metric("EV per $100",  f"${ev_e * 100:.2f}",
+                          delta="Profitable" if ev_e > 0 else "Unprofitable",
+                          delta_color="normal" if ev_e > 0 else "inverse")
+
+            if ev_s > 0.02:
+                st.success(f"✅ NRFI looks +EV at those odds (edge: {edge_s:+.1%})")
+            elif ev_e > 0.02:
+                st.success(f"✅ YRFI looks +EV at those odds (edge: {edge_e:+.1%})")
+            else:
+                st.info("No strong edge detected at these odds. Try line shopping.")
+
+            st.caption("⚠️ For educational purposes only. Not financial or betting advice.")
+
+# ── Tab 2: Parlay Builder ─────────────────────────────────────────────────────
+with tab2:
+    st.subheader("🎰 Parlay Builder")
+    st.caption("Build a parlay using today's games. Model probabilities are used to calculate true EV.")
+
+    if 'num_legs' not in st.session_state:
+        st.session_state.num_legs = 2
+
+    col_add, col_remove, _ = st.columns([1, 1, 4])
+    with col_add:
+        if st.button("➕ Add Leg"):
+            st.session_state.num_legs += 1
+    with col_remove:
+        if st.button("➖ Remove Leg") and st.session_state.num_legs > 2:
+            st.session_state.num_legs -= 1
+
+    st.markdown(f"**{st.session_state.num_legs} Leg Parlay**")
+
+    game_options = [
+        f"{g['away_name']} @ {g['home_name']} ({g['game_time']})"
+        for g in games
+    ]
+
+    BET_TYPES = {
+        'NRFI (Neither team scores)':    'nrfi',
+        'YRFI (At least one scores)':    'yrfi',
+        'Away team scores 1st inning':   'away_scores',
+        'Home team scores 1st inning':   'home_scores',
+    }
+
+    parlay_legs = []
+
+    for leg_num in range(st.session_state.num_legs):
+        st.markdown(f"**Leg {leg_num + 1}**")
+        lc1, lc2, lc3 = st.columns([3, 2, 1])
+
+        with lc1:
+            selected_game = st.selectbox(
+                "Game", options=game_options,
+                key=f"parlay_game_{leg_num}",
+                label_visibility="collapsed"
             )
-        with col_p2:
-            home_pitcher_sel = st.selectbox(
-                f"🏠 Home Starter ({home})",
-                options=pitcher_options,
-                index=pitcher_options.index(home_pitcher_matched)
-                      if home_pitcher_matched in pitcher_options else 0,
-                key=f"home_p_{i}"
+        with lc2:
+            bet_type_label = st.selectbox(
+                "Bet Type", options=list(BET_TYPES.keys()),
+                key=f"parlay_bet_{leg_num}",
+                label_visibility="collapsed"
+            )
+        with lc3:
+            leg_odds = st.number_input(
+                "Odds", value=-110, step=5,
+                key=f"parlay_odds_{leg_num}",
+                label_visibility="collapsed"
             )
 
-        away_stats = get_pitcher_stats(away_pitcher_sel) \
-                     if away_pitcher_sel != 'League Average' else LEAGUE_AVG
-        home_stats = get_pitcher_stats(home_pitcher_sel) \
-                     if home_pitcher_sel != 'League Average' else LEAGUE_AVG
+        game_idx = game_options.index(selected_game)
+        g    = games[game_idx]
+        away = g['away_team']
+        home = g['home_team']
 
-        # Predictions
-        # Away bats top 1st vs home pitcher
-        away_prob, away_runs = predict(away, home, home_stats, is_home=False, month=month)
-        # Home bats bot 1st vs away pitcher
-        home_prob, home_runs = predict(home, away, away_stats, is_home=True,  month=month)
+        ap = match_pitcher(g['away_pitcher'])
+        hp = match_pitcher(g['home_pitcher'])
+        away_stats_p = get_pitcher_stats(ap) if ap != 'League Average' else LEAGUE_AVG
+        home_stats_p = get_pitcher_stats(hp) if hp != 'League Average' else LEAGUE_AVG
 
-        neither_prob = (1 - away_prob) * (1 - home_prob)
-        either_prob  = 1 - neither_prob
+        away_prob_p, _ = predict(away, home, home_stats_p, is_home=False, month=month)
+        home_prob_p, _ = predict(home, away, away_stats_p, is_home=True,  month=month)
+        neither_p = (1 - away_prob_p) * (1 - home_prob_p)
+        either_p  = 1 - neither_p
 
-        # Prediction cards
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            emoji = "🟢" if away_prob >= 0.30 else "🟡" if away_prob >= 0.25 else "🔴"
-            st.metric(f"{emoji} {away} Score (Top 1st)",
-                      f"{away_prob:.1%}", f"xRuns: {away_runs:.3f}")
-        with c2:
-            emoji = "🟢" if home_prob >= 0.30 else "🟡" if home_prob >= 0.25 else "🔴"
-            st.metric(f"{emoji} {home} Score (Bot 1st)",
-                      f"{home_prob:.1%}", f"xRuns: {home_runs:.3f}")
-        with c3:
-            emoji = "🟢" if neither_prob >= 0.53 else "🔴"
-            st.metric(f"{emoji} Scoreless 1st", f"{neither_prob:.1%}",
-                      f"Either scores: {either_prob:.1%}")
-
-        # Pitcher stats
-        with st.expander("📋 Pitcher Stats"):
-            ps1, ps2 = st.columns(2)
-            with ps1:
-                st.markdown(f"**{home_pitcher_sel}** (pitching to {away})")
-                st.markdown(pitcher_stats_table(home_stats))
-            with ps2:
-                st.markdown(f"**{away_pitcher_sel}** (pitching to {home})")
-                st.markdown(pitcher_stats_table(away_stats))
-
-        # EV Calculator
-        st.markdown("#### 💰 EV Calculator")
-        ev1, ev2 = st.columns(2)
-
-        with ev1:
-            st.markdown("**Scoreless 1st Inning**")
-            odds_scoreless = st.number_input(
-                "Sportsbook Odds",
-                value=-110, step=5,
-                key=f"odds_scoreless_{i}"
-            )
-            implied_s = american_to_implied(odds_scoreless)
-            ev_s = calculate_ev(neither_prob, odds_scoreless)
-            edge_s = neither_prob - implied_s
-            st.metric("Model Prob", f"{neither_prob:.1%}")
-            st.metric("Implied Prob", f"{implied_s:.1%}",
-                      delta=f"Edge: {edge_s:+.1%}")
-            st.metric("EV per $100", f"${ev_s * 100:.2f}",
-                      delta="Profitable" if ev_s > 0 else "Unprofitable",
-                      delta_color="normal" if ev_s > 0 else "inverse")
-
-        with ev2:
-            st.markdown("**At Least One Team Scores**")
-            odds_scoring = st.number_input(
-                "Sportsbook Odds",
-                value=-110, step=5,
-                key=f"odds_scoring_{i}"
-            )
-            implied_e = american_to_implied(odds_scoring)
-            ev_e = calculate_ev(either_prob, odds_scoring)
-            edge_e = either_prob - implied_e
-            st.metric("Model Prob", f"{either_prob:.1%}")
-            st.metric("Implied Prob", f"{implied_e:.1%}",
-                      delta=f"Edge: {edge_e:+.1%}")
-            st.metric("EV per $100", f"${ev_e * 100:.2f}",
-                      delta="Profitable" if ev_e > 0 else "Unprofitable",
-                      delta_color="normal" if ev_e > 0 else "inverse")
-
-        if ev_s > 0.02:
-            st.success(f"✅ Scoreless 1st looks +EV at those odds (edge: {edge_s:+.1%})")
-        elif ev_e > 0.02:
-            st.success(f"✅ Scoring 1st looks +EV at those odds (edge: {edge_e:+.1%})")
+        bet_key = BET_TYPES[bet_type_label]
+        if bet_key == 'nrfi':
+            leg_prob = neither_p
+        elif bet_key == 'yrfi':
+            leg_prob = either_p
+        elif bet_key == 'away_scores':
+            leg_prob = away_prob_p
         else:
-            st.info("No strong edge detected at these odds. Try line shopping.")
+            leg_prob = home_prob_p
+
+        parlay_legs.append({
+            'game': selected_game,
+            'bet':  bet_type_label,
+            'odds': leg_odds,
+            'prob': leg_prob
+        })
+
+        st.caption(f"Model probability for this leg: **{leg_prob:.1%}**")
+        st.markdown("")
+
+    if len(parlay_legs) >= 2:
+        st.markdown("---")
+        st.markdown("### 📊 Parlay Summary")
+
+        true_parlay_prob = 1.0
+        for leg in parlay_legs:
+            true_parlay_prob *= leg['prob']
+
+        decimal_odds  = [american_to_decimal(leg['odds']) for leg in parlay_legs]
+        parlay_decimal = 1.0
+        for d in decimal_odds:
+            parlay_decimal *= d
+
+        parlay_payout   = parlay_decimal - 1
+        parlay_american = int(parlay_payout * 100) if parlay_payout >= 1 \
+                          else int(-100 / parlay_payout)
+        parlay_ev       = (true_parlay_prob * parlay_payout) - (1 - true_parlay_prob)
+        implied_parlay  = 1 / parlay_decimal
+
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        with pc1:
+            st.metric("True Parlay Probability", f"{true_parlay_prob:.2%}")
+        with pc2:
+            st.metric("Implied Probability", f"{implied_parlay:.2%}")
+        with pc3:
+            st.metric("Combined Odds",
+                      f"+{parlay_american}" if parlay_american > 0 else str(parlay_american))
+        with pc4:
+            st.metric("EV per $100", f"${parlay_ev * 100:.2f}",
+                      delta="Profitable" if parlay_ev > 0 else "Unprofitable",
+                      delta_color="normal" if parlay_ev > 0 else "inverse")
+
+        leg_df = pd.DataFrame([{
+            'Game':         leg['game'].split('(')[0].strip(),
+            'Bet':          leg['bet'],
+            'Odds':         leg['odds'],
+            'Model Prob':   f"{leg['prob']:.1%}",
+            'Implied Prob': f"{american_to_implied(leg['odds']):.1%}",
+            'Leg Edge':     f"{(leg['prob'] - american_to_implied(leg['odds'])):+.1%}"
+        } for leg in parlay_legs])
+        st.dataframe(leg_df, use_container_width=True, hide_index=True)
+
+        if parlay_ev > 0.05:
+            st.success(f"✅ Strong +EV parlay. True prob ({true_parlay_prob:.2%}) > implied ({implied_parlay:.2%}).")
+        elif parlay_ev > 0:
+            st.info(f"📊 Slight +EV parlay ({parlay_ev * 100:.1f}%). Marginal edge.")
+        else:
+            st.warning(f"⚠️ Negative EV parlay ({parlay_ev * 100:.1f}%). Vig is eating your edge.")
 
         st.caption("⚠️ For educational purposes only. Not financial or betting advice.")
 
-# ── Parlay Builder ────────────────────────────────────────────────────────────
-st.markdown("---")
-st.subheader("🎰 Parlay Builder")
-st.caption("Build a parlay using today's games. Your model probabilities are used to calculate true EV.")
-
-if 'num_legs' not in st.session_state:
-    st.session_state.num_legs = 2
-
-col_add, col_remove, _ = st.columns([1, 1, 4])
-with col_add:
-    if st.button("➕ Add Leg"):
-        st.session_state.num_legs += 1
-with col_remove:
-    if st.button("➖ Remove Leg") and st.session_state.num_legs > 2:
-        st.session_state.num_legs -= 1
-
-st.markdown(f"**{st.session_state.num_legs} Leg Parlay**")
-st.markdown("")
-
-# Game options for dropdown
-game_options = [
-    f"{g['away_name']} @ {g['home_name']} ({g['game_time']})"
-    for g in games
-]
-
-BET_TYPES = {
-    'NRFI (Neither team scores)': 'nrfi',
-    'YRFI (At least one team scores)': 'yrfi',
-    'Away team scores 1st inning': 'away_scores',
-    'Home team scores 1st inning': 'home_scores',
-}
-
-parlay_legs = []
-
-for leg_num in range(st.session_state.num_legs):
-    st.markdown(f"**Leg {leg_num + 1}**")
-    lc1, lc2, lc3 = st.columns([3, 2, 1])
-
-    with lc1:
-        selected_game = st.selectbox(
-            "Game",
-            options=game_options,
-            key=f"parlay_game_{leg_num}",
-            label_visibility="collapsed"
-        )
-
-    with lc2:
-        bet_type_label = st.selectbox(
-            "Bet Type",
-            options=list(BET_TYPES.keys()),
-            key=f"parlay_bet_{leg_num}",
-            label_visibility="collapsed"
-        )
-
-    with lc3:
-        leg_odds = st.number_input(
-            "Odds",
-            value=-110,
-            step=5,
-            key=f"parlay_odds_{leg_num}",
-            label_visibility="collapsed"
-        )
-
-    # Get the game object
-    game_idx = game_options.index(selected_game)
-    g = games[game_idx]
-    away = g['away_team']
-    home = g['home_team']
-
-    # Match pitchers
-    def match_pitcher_parlay(name):
-        if name == 'TBD':
-            return 'League Average'
-        matches = pitchers_df[
-            pitchers_df['pitcher_name'].str.lower() == name.lower()
-        ]
-        return matches.iloc[0]['pitcher_name'] if len(matches) > 0 else 'League Average'
-
-    away_pitcher_m = match_pitcher_parlay(g['away_pitcher'])
-    home_pitcher_m = match_pitcher_parlay(g['home_pitcher'])
-    away_stats_p = get_pitcher_stats(away_pitcher_m) if away_pitcher_m != 'League Average' else LEAGUE_AVG
-    home_stats_p = get_pitcher_stats(home_pitcher_m) if home_pitcher_m != 'League Average' else LEAGUE_AVG
-
-    away_prob_p, _ = predict(away, home, home_stats_p, is_home=False, month=month)
-    home_prob_p, _ = predict(home, away, away_stats_p, is_home=True,  month=month)
-
-    neither_p = (1 - away_prob_p) * (1 - home_prob_p)
-    either_p  = 1 - neither_p
-
-    bet_key = BET_TYPES[bet_type_label]
-    if bet_key == 'nrfi':
-        leg_prob = neither_p
-    elif bet_key == 'yrfi':
-        leg_prob = either_p
-    elif bet_key == 'away_scores':
-        leg_prob = away_prob_p
-    else:
-        leg_prob = home_prob_p
-
-    parlay_legs.append({
-        'game': selected_game,
-        'bet': bet_type_label,
-        'odds': leg_odds,
-        'prob': leg_prob
-    })
-
-    # Show individual leg probability
-    st.caption(f"Model probability for this leg: **{leg_prob:.1%}**")
-    st.markdown("")
-
-# ── Parlay Results ────────────────────────────────────────────────────────────
-if len(parlay_legs) >= 2:
-    st.markdown("---")
-    st.markdown("### 📊 Parlay Summary")
-
-    # True parlay probability (model)
-    true_parlay_prob = 1.0
-    for leg in parlay_legs:
-        true_parlay_prob *= leg['prob']
-
-    # Parlay payout calculation
-    def american_to_decimal(odds):
-        if odds > 0:
-            return (odds / 100) + 1
-        else:
-            return (100 / abs(odds)) + 1
-
-    decimal_odds = [american_to_decimal(leg['odds']) for leg in parlay_legs]
-    parlay_decimal = 1.0
-    for d in decimal_odds:
-        parlay_decimal *= d
-
-    parlay_payout = parlay_decimal - 1  # profit per $1 wagered
-    parlay_american = int((parlay_payout * 100)) if parlay_payout >= 1 \
-                      else int(-100 / parlay_payout)
-
-    # EV
-    parlay_ev = (true_parlay_prob * parlay_payout) - (1 - true_parlay_prob)
-    parlay_ev_pct = parlay_ev * 100
-
-    # Implied probability from combined odds
-    implied_parlay_prob = 1 / parlay_decimal
-
-    pc1, pc2, pc3, pc4 = st.columns(4)
-    with pc1:
-        st.metric("True Parlay Probability", f"{true_parlay_prob:.2%}")
-    with pc2:
-        st.metric("Implied Probability", f"{implied_parlay_prob:.2%}")
-    with pc3:
-        st.metric("Combined Odds", f"+{parlay_american}" if parlay_american > 0 else str(parlay_american))
-    with pc4:
-        st.metric(
-            "EV per $100",
-            f"${parlay_ev * 100:.2f}",
-            delta="Profitable" if parlay_ev > 0 else "Unprofitable",
-            delta_color="normal" if parlay_ev > 0 else "inverse"
-        )
-
-    # Leg breakdown table
-    st.markdown("**Leg Breakdown:**")
-    leg_df = pd.DataFrame([{
-        'Game': leg['game'].split('(')[0].strip(),
-        'Bet': leg['bet'],
-        'Odds': leg['odds'],
-        'Model Prob': f"{leg['prob']:.1%}",
-        'Implied Prob': f"{american_to_implied(leg['odds']):.1%}",
-        'Leg Edge': f"{(leg['prob'] - american_to_implied(leg['odds'])):+.1%}"
-    } for leg in parlay_legs])
-    st.dataframe(leg_df, use_container_width=True, hide_index=True)
-
-    if parlay_ev > 0.05:
-        st.success(f"✅ Strong +EV parlay. True probability ({true_parlay_prob:.2%}) exceeds implied ({implied_parlay_prob:.2%}).")
-    elif parlay_ev > 0:
-        st.info(f"📊 Slight +EV parlay ({parlay_ev_pct:.1f}%). Marginal edge.")
-    else:
-        st.warning(f"⚠️ Negative EV parlay ({parlay_ev_pct:.1f}%). The vig is eating your edge across legs.")
-
-    st.caption("⚠️ For educational purposes only. Not financial or betting advice.")
-
-st.markdown("---")
-
-tab1, tab2, tab3 = st.tabs(["📅 Today's Games", "🎰 Parlay Builder", "📊 Model Results"])
-
-with tab1:
-    st.markdown(f"### {len(games)} Games Today")
-    
-    # YOUR ENTIRE EXISTING GAME LOOP GOES HERE
-    # (the for i, game in enumerate(games): block and everything inside it)
-
-with tab2:
-    st.subheader("🎰 Parlay Builder")
-    # YOUR ENTIRE EXISTING PARLAY BUILDER CODE GOES HERE
-
+# ── Tab 3: Model Results ──────────────────────────────────────────────────────
 with tab3:
     st.subheader("📊 Model Performance Dashboard")
     st.caption("Tracking NRFI/YRFI predictions vs actual outcomes.")
-    # THE RESULTS DASHBOARD CODE GOES HERE
+
+    results_df = load_results()
+
+    if results_df.empty:
+        st.info("No completed game results yet. Check back after today's games finish.")
+    else:
+        results_df['game_date'] = pd.to_datetime(results_df['game_date'])
+        results_df['correct'] = (
+            (results_df['outcome_nrfi'] == True)  & (results_df['nrfi_prob'] >= 0.5)
+        ) | (
+            (results_df['outcome_nrfi'] == False) & (results_df['nrfi_prob'] < 0.5)
+        )
+
+        total    = len(results_df)
+        correct  = results_df['correct'].sum()
+        nrfi_ct  = results_df['outcome_nrfi'].sum()
+        avg_prob = results_df['nrfi_prob'].mean()
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Games Tracked",          total)
+        m2.metric("Model Accuracy",         f"{correct/total:.1%}")
+        m3.metric("Actual NRFI Rate",       f"{nrfi_ct/total:.1%}")
+        m4.metric("Avg Predicted NRFI Prob",f"{avg_prob:.1%}")
+
+        st.markdown("#### Calibration")
+        results_df['prob_bucket'] = pd.cut(
+            results_df['nrfi_prob'],
+            bins=[0, 0.45, 0.50, 0.55, 0.60, 0.65, 1.0],
+            labels=['<45%', '45-50%', '50-55%', '55-60%', '60-65%', '>65%']
+        )
+        cal = results_df.groupby('prob_bucket', observed=True).agg(
+            predicted=('nrfi_prob',   'mean'),
+            actual=   ('outcome_nrfi','mean'),
+            count=    ('outcome_nrfi','count')
+        ).reset_index()
+        st.dataframe(cal, use_container_width=True, hide_index=True)
+
+        st.markdown("#### Game Log")
+        display_df = results_df[[
+            'game_date', 'away_team', 'home_team',
+            'away_pitcher', 'home_pitcher',
+            'nrfi_prob', 'yrfi_prob',
+            'away_runs_1st', 'home_runs_1st',
+            'outcome_nrfi', 'correct', 'manually_overridden'
+        ]].copy()
+        display_df['game_date'] = display_df['game_date'].dt.strftime('%Y-%m-%d')
+        display_df['nrfi_prob'] = display_df['nrfi_prob'].apply(lambda x: f"{x:.1%}")
+        display_df['yrfi_prob'] = display_df['yrfi_prob'].apply(lambda x: f"{x:.1%}")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        st.markdown("#### ✏️ Manual Override")
+        st.caption("Use this if auto-fetch missed a game result.")
+        try:
+            pending_df = pd.DataFrame(
+                supabase.table('predictions')
+                .select('*')
+                .eq('outcome_fetched', False)
+                .execute().data
+            )
+        except Exception:
+            pending_df = pd.DataFrame()
+
+        if pending_df.empty:
+            st.info("No pending games to override.")
+        else:
+            for _, row in pending_df.iterrows():
+                oc1, oc2, oc3 = st.columns([3, 1, 1])
+                with oc1:
+                    st.write(f"{row['game_date']} — {row['away_team']} @ {row['home_team']}")
+                with oc2:
+                    if st.button("NRFI ✅", key=f"nrfi_yes_{row['id']}"):
+                        manual_override(row['game_pk'], row['game_date'], True)
+                        st.rerun()
+                with oc3:
+                    if st.button("YRFI ❌", key=f"nrfi_no_{row['id']}"):
+                        manual_override(row['game_pk'], row['game_date'], False)
+                        st.rerun()
 
 # Footer stays outside tabs
 st.markdown("---")
