@@ -260,34 +260,20 @@ def save_predictions_to_db(games, predictions_by_game):
 
 def fetch_and_update_outcomes():
     try:
-        pending_df = pd.DataFrame(
-    supabase.table('predictions')
-    .select('*')
-    .eq('outcome_fetched', False)
-    .eq('game_date', selected_date.isoformat())
-    .lt('game_date', date.today().isoformat())
-    .execute().data
-)
+        response = supabase.table('predictions')\
+            .select('*')\
+            .eq('outcome_fetched', False)\
+            .execute()
 
         now_utc = datetime.now(timezone.utc)
 
-        for row in pending.data:
-            # Only fetch outcomes for games that started more than 3 hours ago
+        for row in response.data:
             try:
                 game_date = row['game_date']
-                game_time_str = row['game_time']
-
-                # Skip if game time is TBD or can't be parsed
-                if not game_time_str or game_time_str == 'TBD':
-                    continue
-
-                # Parse stored game time — compare against current UTC time
-                # We stored it as EST display string so use game_date + 3hr buffer
                 game_dt = datetime.strptime(
                     f"{game_date}", '%Y-%m-%d'
                 ).replace(tzinfo=timezone.utc)
 
-                # Only process yesterday's or older games, or today's if 4+ hours have passed
                 hours_since_midnight = (now_utc - game_dt).total_seconds() / 3600
                 if hours_since_midnight < 4:
                     continue
