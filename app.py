@@ -386,7 +386,11 @@ for g in games:
         'yrfi_prob': 1 - neither
     }
 
-save_predictions_to_db(games, predictions_by_game)
+ession_key = f"saved_{selected_date}"
+if session_key not in st.session_state:
+    save_predictions_to_db(games, predictions_by_game)
+    st.session_state[session_key] = True
+    
 fetch_and_update_outcomes()
 
 if not games:
