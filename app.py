@@ -205,21 +205,33 @@ def fetch_game_linescore(game_pk):
     url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
     try:
         data = requests.get(url, timeout=10).json()
+        
+        # Check game status first
+        url2 = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/feed/live?fields=gameData,status,abstractGameState"
+        status_data = requests.get(url2, timeout=10).json()
+        game_state = status_data.get('gameData', {}).get('status', {}).get('abstractGameState', '')
+        
+        # Only process if game is officially Final
+        if game_state != 'Final':
+            return None
+
         innings = data.get('innings', [])
         if not innings:
             return None
+            
         first_inning = innings[0]
         away_runs = first_inning.get('away', {}).get('runs', None)
         home_runs = first_inning.get('home', {}).get('runs', None)
-        current_inning = data.get('currentInning', 0)
-        is_final = current_inning >= 9 and not data.get('isTopInning', True)
+
+        if away_runs is None or home_runs is None:
+            return None
+
         return {
             'away_runs_1st': away_runs,
             'home_runs_1st': home_runs,
-            'total_runs_1st': (away_runs or 0) + (home_runs or 0),
-            'nrfi': ((away_runs or 0) + (home_runs or 0)) == 0,
-            'is_final': is_final,
-            'current_inning': current_inning
+            'total_runs_1st': away_runs + home_runs,
+            'nrfi': (away_runs + home_runs) == 0,
+            'is_final': True
         }
     except Exception:
         return None
