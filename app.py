@@ -34,8 +34,8 @@ def save_predictions_to_db(games, predictions_by_game):
                 'away_pitcher': g['away_pitcher'],
                 'home_pitcher': g['home_pitcher'],
                 'game_time': g['game_time'],
-                'nrfi_prob': round(pred['nrfi_prob'], 4),
-                'yrfi_prob': round(pred['yrfi_prob'], 4),
+                'nrfi_prob': float(round(pred['nrfi_prob'], 4)),
+                'yrfi_prob': float(round(pred['yrfi_prob'], 4)),
                 'outcome_nrfi': None,
                 'outcome_fetched': False
             })
