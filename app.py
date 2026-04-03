@@ -226,22 +226,28 @@ def fetch_game_linescore(game_pk):
 
 def save_predictions_to_db(games, predictions_by_game):
     today = date.today().isoformat()
+    selected = str(games[0].get('game_date', today)) if games else today
+    
+    # Only save predictions for today's actual games
+    if str(selected_date) != today:
+        return
+        
     rows = []
     for g in games:
         pk = str(g['game_pk'])
         if pk in predictions_by_game:
             pred = predictions_by_game[pk]
             rows.append({
-                'game_date':      today,
-                'game_pk':        pk,
-                'away_team':      g['away_team'],
-                'home_team':      g['home_team'],
-                'away_pitcher':   g['away_pitcher'],
-                'home_pitcher':   g['home_pitcher'],
-                'game_time':      g['game_time'],
-                'nrfi_prob':      float(round(pred['nrfi_prob'], 4)),
-                'yrfi_prob':      float(round(pred['yrfi_prob'], 4)),
-                'outcome_nrfi':   None,
+                'game_date':       today,
+                'game_pk':         pk,
+                'away_team':       g['away_team'],
+                'home_team':       g['home_team'],
+                'away_pitcher':    g['away_pitcher'],
+                'home_pitcher':    g['home_pitcher'],
+                'game_time':       g['game_time'],
+                'nrfi_prob':       float(round(pred['nrfi_prob'], 4)),
+                'yrfi_prob':       float(round(pred['yrfi_prob'], 4)),
+                'outcome_nrfi':    None,
                 'outcome_fetched': False
             })
     if rows:
@@ -254,10 +260,14 @@ def save_predictions_to_db(games, predictions_by_game):
 
 def fetch_and_update_outcomes():
     try:
-        pending = supabase.table('predictions')\
-            .select('*')\
-            .eq('outcome_fetched', False)\
-            .execute()
+        pending_df = pd.DataFrame(
+    supabase.table('predictions')
+    .select('*')
+    .eq('outcome_fetched', False)
+    .eq('game_date', selected_date.isoformat())
+    .lt('game_date', date.today().isoformat())
+    .execute().data
+)
 
         now_utc = datetime.now(timezone.utc)
 
