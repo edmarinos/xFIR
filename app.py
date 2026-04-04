@@ -1088,59 +1088,103 @@ with tab4:
 
         # Update daily bankroll history
         # Update bankroll history for ALL days with resolved bets
-try:
-    all_dates = supabase.table('bankroll')\
-        .select('game_date')\
-        .eq('resolved', True)\
-        .execute()
-    
-    unique_dates = list(set(row['game_date'] for row in all_dates.data))
-    
-    for bet_date in unique_dates:
-        resolved_bets = supabase.table('bankroll')\
-            .select('*')\
-            .eq('game_date', bet_date)\
+        all_dates = supabase.table('bankroll')\
+            .select('game_date')\
             .eq('resolved', True)\
             .execute()
-        
-        if not resolved_bets.data:
-            continue
-            
-        # Check if already logged
-        existing = supabase.table('bankroll_history')\
-            .select('id, ending_bankroll')\
-            .eq('game_date', bet_date)\
-            .execute()
-        
-        if existing.data and existing.data[0]['ending_bankroll'] != 100.0:
-            continue  # Already properly logged, skip
-            
-        daily_pl = sum(b['profit_loss'] for b in resolved_bets.data 
-                      if b['profit_loss'] is not None)
-        bets_won = sum(1 for b in resolved_bets.data if b['bet_won'])
-        
-        # Get previous day's ending bankroll
-        prev = supabase.table('bankroll_history')\
-            .select('ending_bankroll')\
-            .lt('game_date', bet_date)\
-            .order('game_date', desc=True)\
-            .limit(1)\
-            .execute()
-        
-        start_br = prev.data[0]['ending_bankroll'] if prev.data else 100.0
-        new_bankroll = start_br + daily_pl
-        
-        supabase.table('bankroll_history').upsert({
-            'game_date':         bet_date,
-            'starting_bankroll': float(start_br),
-            'ending_bankroll':   float(round(new_bankroll, 2)),
-            'daily_pl':          float(round(daily_pl, 2)),
-            'bets_placed':       len(resolved_bets.data),
-            'bets_won':          bets_won
-        }, on_conflict='game_date').execute()
 
-except Exception as e:
-    st.warning(f"Could not update bankroll history: {e}")
+        unique_dates = list(set(row['game_date'] for row in all_dates.data))
+
+        for bet_date in unique_dates:
+            resolved_bets = supabase.table('bankroll')\
+                .select('*')\
+                .eq('game_date', bet_date)\
+                .eq('resolved', True)\
+                .execute()
+
+            if not resolved_bets.data:
+                continue
+
+            # Check if already logged correctly
+            existing = supabase.table('bankroll_history')\
+                .select('id, ending_bankroll')\
+                .eq('game_date', bet_date)\
+                .execute()
+
+            if existing.data and existing.data[0]['ending_bankroll'] != 100.0:
+                continue  # Already properly logged, skip
+
+            daily_pl = sum(b['profit_loss'] for b in resolved_bets.data
+                          if b['profit_loss'] is not None)
+            bets_won = sum(1 for b in resolved_bets.data if b['bet_won'])
+
+            # Get previous day's ending bankroll
+            prev = supabase.table('bankroll_history')\
+                .select('ending_bankroll')\
+                .lt('game_date', bet_date)\
+                .order('game_date', desc=True)\
+                .limit(1)\
+                .execute()
+
+            start_br = prev.data[0]['ending_bankroll'] if prev.data else 100.0
+            new_bankroll = start_br + daily_pl
+
+            supabase.table('bankroll_history').upsert({
+                'game_date':         bet_date,
+                'starting_bankroll': float(start_br),
+                'ending_bankroll':   float(round(new_bankroll, 2)),
+                'daily_pl':          float(round(daily_pl, 2)),
+                'bets_placed':       len(resolved_bets.data),
+                'bets_won':          bets_won
+            }, on_conflict='game_date').execute()
+
+    except Exception as e:
+        st.warning(f"Could not resolve bets: {e}")
+
+    # Display history
+    try:
+        history = supabase.table('bankroll_history')\
+            .select('*')\
+            .order('game_date', desc=False)\
+            .execute()
+
+        if history.data:
+            hist_df = pd.DataFrame(history.data)
+
+            bh1, bh2, bh3, bh4 = st.columns(4)
+            bh1.metric("Starting Bankroll",
+                       f"${hist_df.iloc[0]['starting_bankroll']:.2f}")
+            bh2.metric("Current Bankroll",
+                       f"${hist_df.iloc[-1]['ending_bankroll']:.2f}",
+                       delta=f"${hist_df['daily_pl'].sum():.2f} total")
+            bh3.metric("Total Bets",    hist_df['bets_placed'].sum())
+            bh4.metric("Total Wins",    hist_df['bets_won'].sum())
+
+            st.line_chart(
+                hist_df.set_index('game_date')['ending_bankroll'],
+                use_container_width=True
+            )
+
+            st.markdown("#### Daily Log")
+            display_hist = hist_df[[
+                'game_date', 'starting_bankroll', 'ending_bankroll',
+                'daily_pl', 'bets_placed', 'bets_won'
+            ]].copy()
+            display_hist.columns = ['Date', 'Start', 'End', 'P&L', 'Bets', 'Wins']
+            display_hist['Start'] = display_hist['Start'].apply(lambda x: f"${x:.2f}")
+            display_hist['End']   = display_hist['End'].apply(lambda x: f"${x:.2f}")
+            display_hist['P&L']   = display_hist['P&L'].apply(
+                lambda x: f"+${x:.2f}" if x > 0 else f"-${abs(x):.2f}"
+            )
+            st.dataframe(display_hist, use_container_width=True, hide_index=True)
+
+        else:
+            st.info("No bankroll history yet. Place your first bets above.")
+
+    except Exception as e:
+        st.warning(f"Could not load bankroll history: {e}")
+
+    st.caption("⚠️ For educational purposes only. Not financial or betting advice.")
 
     # Display history
     try:
