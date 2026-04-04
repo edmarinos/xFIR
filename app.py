@@ -202,9 +202,22 @@ def get_todays_games(selected_date):
 # ── Supabase functions ────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def fetch_game_linescore(game_pk):
-    url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
     try:
-        data = requests.get(url, timeout=10).json()
+        # Use schedule endpoint to get official game status
+        url = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={game_pk}"
+        status_data = requests.get(url, timeout=10).json()
+        dates = status_data.get('dates', [])
+        if not dates:
+            return None
+        game_status = dates[0]['games'][0].get('status', {})
+        abstract_state = game_status.get('abstractGameState', '')
+
+        if abstract_state != 'Final':
+            return None
+
+        # Now get linescore
+        url2 = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
+        data = requests.get(url2, timeout=10).json()
         innings = data.get('innings', [])
         if not innings:
             return None
@@ -214,21 +227,6 @@ def fetch_game_linescore(game_pk):
         home_runs = first_inning.get('home', {}).get('runs', None)
 
         if away_runs is None or home_runs is None:
-            return None
-
-        # Game is final if:
-        # - 9+ innings played AND not currently in top of inning (bottom finished)
-        # - OR extra innings completed
-        current_inning = data.get('currentInning', 0)
-        is_top = data.get('isTopInning', True)
-        inning_state = data.get('inningState', '')
-
-        is_final = (
-            current_inning >= 9 and 
-            inning_state in ['End', 'Final', 'Game Over']
-        )
-
-        if not is_final:
             return None
 
         return {
