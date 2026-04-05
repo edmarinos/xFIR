@@ -817,11 +817,27 @@ with tab3:
         nrfi_ct  = results_df['outcome_nrfi'].sum()
         avg_prob = results_df['nrfi_prob'].mean()
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Games Tracked",           total)
-        m2.metric("Model Accuracy",          f"{correct/total:.1%}")
-        m3.metric("Actual NRFI Rate",        f"{nrfi_ct/total:.1%}")
-        m4.metric("Avg Predicted NRFI Prob", f"{avg_prob:.1%}")
+        # Load ALL results regardless of date filter for total accuracy
+        all_results = load_results(selected_date=None)
+        if not all_results.empty:
+            all_results['correct'] = (
+                (all_results['outcome_nrfi'] == True)  & (all_results['nrfi_prob'] >= 0.5)
+            ) | (
+                (all_results['outcome_nrfi'] == False) & (all_results['nrfi_prob'] < 0.5)
+            )
+            total_all   = len(all_results)
+            correct_all = all_results['correct'].sum()
+        else:
+            total_all   = 0
+            correct_all = 0
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Games Tracked (Today)",    total)
+        m2.metric("Today's Accuracy",         f"{correct/total:.1%}")
+        m3.metric("Total Model Accuracy",     f"{correct_all/total_all:.1%}" if total_all > 0 else "N/A",
+                delta=f"{total_all} games total")
+        m4.metric("Actual NRFI Rate",         f"{nrfi_ct/total:.1%}")
+        m5.metric("Avg Predicted NRFI Prob",  f"{avg_prob:.1%}")
 
         st.markdown("#### Calibration")
         results_df['prob_bucket'] = pd.cut(
