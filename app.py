@@ -457,7 +457,7 @@ def resolve_bankroll_bets():
                 .execute()
 
             # Skip if already logged with real P&L
-            if existing.data and existing.data[0].get('daily_pl', 0) != 0:
+            if existing.data and existing.data[0].get('bets_placed', 0) > 0:
                 continue
 
             daily_pl = sum(
