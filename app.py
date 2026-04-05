@@ -22,6 +22,27 @@ def get_supabase():
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
 
+def load_daily_odds(game_date):
+    try:
+        result = supabase.table('daily_odds')\
+            .select('*')\
+            .eq('game_date', game_date.isoformat())\
+            .execute()
+        return {row['game_pk']: row for row in result.data}
+    except Exception:
+        return {}
+
+def save_daily_odds(game_date, game_pk, nrfi_odds, yrfi_odds):
+    try:
+        supabase.table('daily_odds').upsert({
+            'game_date': game_date.isoformat(),
+            'game_pk':   game_pk,
+            'nrfi_odds': int(nrfi_odds),
+            'yrfi_odds': int(yrfi_odds),
+        }, on_conflict='game_date,game_pk').execute()
+    except Exception:
+        pass
+
 supabase = get_supabase()
 
 # ── Load models ───────────────────────────────────────────────────────────────
@@ -960,33 +981,49 @@ with tab4:
 
     st.markdown("---")
 
-    # Odds input
-    st.subheader("📋 Enter Today's Odds")
-    st.caption("Enter the NRFI and YRFI odds for each game from your sportsbook.")
+    # Load saved odds for today
+saved_odds = load_daily_odds(selected_date)
 
-    odds_inputs = {}
-    for i, game in enumerate(games):
-        away      = game['away_team']
-        home      = game['home_team']
-        game_time = game['game_time']
-        pk        = str(game['game_pk'])
+st.subheader("📋 Enter Today's Odds")
+st.caption("Odds are saved automatically and persist through the day.")
 
-        col_label, col_nrfi, col_yrfi = st.columns([3, 1, 1])
-        with col_label:
-            st.markdown(f"**{away} @ {home}** — {game_time}")
-        with col_nrfi:
-            nrfi_odds = st.number_input(
-                "NRFI", value=-115, step=5,
-                key=f"fin_nrfi_{i}",
-                label_visibility="visible"
-            )
-        with col_yrfi:
-            yrfi_odds = st.number_input(
-                "YRFI", value=-105, step=5,
-                key=f"fin_yrfi_{i}",
-                label_visibility="visible"
-            )
-        odds_inputs[pk] = {'nrfi_odds': nrfi_odds, 'yrfi_odds': yrfi_odds}
+odds_inputs = {}
+odds_changed = False
+
+for i, game in enumerate(games):
+    away      = game['away_team']
+    home      = game['home_team']
+    game_time = game['game_time']
+    pk        = str(game['game_pk'])
+
+    # Use saved odds if available, otherwise use defaults
+    saved = saved_odds.get(pk, {})
+    default_nrfi = saved.get('nrfi_odds', -115)
+    default_yrfi = saved.get('yrfi_odds', -105)
+
+    col_label, col_nrfi, col_yrfi = st.columns([3, 1, 1])
+    with col_label:
+        st.markdown(f"**{away} @ {home}** — {game_time}")
+    with col_nrfi:
+        nrfi_odds = st.number_input(
+            "NRFI", value=default_nrfi, step=5,
+            key=f"fin_nrfi_{i}",
+            label_visibility="visible"
+        )
+    with col_yrfi:
+        yrfi_odds = st.number_input(
+            "YRFI", value=default_yrfi, step=5,
+            key=f"fin_yrfi_{i}",
+            label_visibility="visible"
+        )
+
+    odds_inputs[pk] = {'nrfi_odds': nrfi_odds, 'yrfi_odds': yrfi_odds}
+
+    # Save if changed from stored value
+    if nrfi_odds != default_nrfi or yrfi_odds != default_yrfi:
+        save_daily_odds(selected_date, pk, nrfi_odds, yrfi_odds)
+
+st.caption("✅ Odds auto-save when changed.")
 
     st.markdown("---")
 
