@@ -286,6 +286,24 @@ def fetch_and_update_outcomes():
 
         now_utc = datetime.now(timezone.utc)
 
+        # Check for postponed games and remove them
+        for row in response.data:
+            try:
+                url = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={row['game_pk']}"
+                status_data = requests.get(url, timeout=10).json()
+                dates = status_data.get('dates', [])
+                if not dates:
+                    continue
+                detailed_state = dates[0]['games'][0].get('status', {}).get('detailedState', '')
+                if 'Postponed' in detailed_state:
+                    supabase.table('predictions')\
+                        .delete()\
+                        .eq('game_pk', row['game_pk'])\
+                        .eq('game_date', row['game_date'])\
+                        .execute()
+            except Exception:
+                continue
+
         for row in response.data:
             try:
                 game_date = row['game_date']
