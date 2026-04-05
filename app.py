@@ -987,43 +987,43 @@ saved_odds = load_daily_odds(selected_date)
 st.subheader("📋 Enter Today's Odds")
 st.caption("Odds are saved automatically and persist through the day.")
 
-odds_inputs = {}
-odds_changed = False
+        odds_inputs = {}
+        odds_changed = False
 
-for i, game in enumerate(games):
-    away      = game['away_team']
-    home      = game['home_team']
-    game_time = game['game_time']
-    pk        = str(game['game_pk'])
+        for i, game in enumerate(games):
+            away      = game['away_team']
+            home      = game['home_team']
+            game_time = game['game_time']
+            pk        = str(game['game_pk'])
 
-    # Use saved odds if available, otherwise use defaults
-    saved = saved_odds.get(pk, {})
-    default_nrfi = saved.get('nrfi_odds', -115)
-    default_yrfi = saved.get('yrfi_odds', -105)
+            # Use saved odds if available, otherwise use defaults
+            saved = saved_odds.get(pk, {})
+            default_nrfi = saved.get('nrfi_odds', -115)
+            default_yrfi = saved.get('yrfi_odds', -105)
 
-    col_label, col_nrfi, col_yrfi = st.columns([3, 1, 1])
-    with col_label:
-        st.markdown(f"**{away} @ {home}** — {game_time}")
-    with col_nrfi:
-        nrfi_odds = st.number_input(
-            "NRFI", value=default_nrfi, step=5,
-            key=f"fin_nrfi_{i}",
-            label_visibility="visible"
-        )
-    with col_yrfi:
-        yrfi_odds = st.number_input(
-            "YRFI", value=default_yrfi, step=5,
-            key=f"fin_yrfi_{i}",
-            label_visibility="visible"
-        )
+            col_label, col_nrfi, col_yrfi = st.columns([3, 1, 1])
+            with col_label:
+                st.markdown(f"**{away} @ {home}** — {game_time}")
+            with col_nrfi:
+                nrfi_odds = st.number_input(
+                    "NRFI", value=default_nrfi, step=5,
+                    key=f"fin_nrfi_{i}",
+                    label_visibility="visible"
+                )
+            with col_yrfi:
+                yrfi_odds = st.number_input(
+                    "YRFI", value=default_yrfi, step=5,
+                    key=f"fin_yrfi_{i}",
+                    label_visibility="visible"
+                )
 
-    odds_inputs[pk] = {'nrfi_odds': nrfi_odds, 'yrfi_odds': yrfi_odds}
+            odds_inputs[pk] = {'nrfi_odds': nrfi_odds, 'yrfi_odds': yrfi_odds}
 
-    # Save if changed from stored value
-    if nrfi_odds != default_nrfi or yrfi_odds != default_yrfi:
-        save_daily_odds(selected_date, pk, nrfi_odds, yrfi_odds)
+            # Save if changed from stored value
+            if nrfi_odds != default_nrfi or yrfi_odds != default_yrfi:
+                save_daily_odds(selected_date, pk, nrfi_odds, yrfi_odds)
 
-st.caption("✅ Odds auto-save when changed.")
+        st.caption("✅ Odds auto-save when changed.")
 
     st.markdown("---")
 
