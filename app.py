@@ -987,8 +987,8 @@ saved_odds = load_daily_odds(selected_date)
 st.subheader("📋 Enter Today's Odds")
 st.caption("Odds are saved automatically and persist through the day.")
 
-        odds_inputs = {}
-        odds_changed = False
+    odds_inputs = {}
+    odds_changed = False
 
         for i, game in enumerate(games):
             away      = game['away_team']
