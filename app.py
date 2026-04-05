@@ -22,27 +22,6 @@ def get_supabase():
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
 
-def load_daily_odds(game_date):
-    try:
-        result = supabase.table('daily_odds')\
-            .select('*')\
-            .eq('game_date', game_date.isoformat())\
-            .execute()
-        return {row['game_pk']: row for row in result.data}
-    except Exception:
-        return {}
-
-def save_daily_odds(game_date, game_pk, nrfi_odds, yrfi_odds):
-    try:
-        supabase.table('daily_odds').upsert({
-            'game_date': game_date.isoformat(),
-            'game_pk':   game_pk,
-            'nrfi_odds': int(nrfi_odds),
-            'yrfi_odds': int(yrfi_odds),
-        }, on_conflict='game_date,game_pk').execute()
-    except Exception:
-        pass
-
 supabase = get_supabase()
 
 # ── Load models ───────────────────────────────────────────────────────────────
@@ -224,32 +203,25 @@ def get_todays_games(selected_date):
 @st.cache_data(ttl=300)
 def fetch_game_linescore(game_pk):
     try:
-        # Use schedule endpoint to get official game status
         url = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={game_pk}"
         status_data = requests.get(url, timeout=10).json()
         dates = status_data.get('dates', [])
         if not dates:
             return None
-        game_status = dates[0]['games'][0].get('status', {})
+        game_status    = dates[0]['games'][0].get('status', {})
         abstract_state = game_status.get('abstractGameState', '')
-
         if abstract_state != 'Final':
             return None
-
-        # Get linescore
         url2 = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
         data = requests.get(url2, timeout=10).json()
         innings = data.get('innings', [])
         if not innings:
             return None
-
         first_inning = innings[0]
         away_runs = first_inning.get('away', {}).get('runs', None)
         home_runs = first_inning.get('home', {}).get('runs', None)
-
         if away_runs is None or home_runs is None:
             return None
-
         return {
             'away_runs_1st': away_runs,
             'home_runs_1st': home_runs,
@@ -262,11 +234,8 @@ def fetch_game_linescore(game_pk):
 
 def save_predictions_to_db(games, predictions_by_game, selected_date):
     today = date.today().isoformat()
-
-    # Only save for today
     if str(selected_date) != today:
         return
-
     for g in games:
         pk = str(g['game_pk'])
         if pk not in predictions_by_game:
@@ -278,10 +247,8 @@ def save_predictions_to_db(games, predictions_by_game, selected_date):
                 .eq('game_date', today)\
                 .eq('game_pk', pk)\
                 .execute()
-
             if len(existing.data) > 0:
-                continue  # Skip — already saved
-
+                continue
             supabase.table('predictions').insert({
                 'game_date':       today,
                 'game_pk':         pk,
@@ -307,7 +274,7 @@ def fetch_and_update_outcomes():
 
         now_utc = datetime.now(timezone.utc)
 
-        # Check for postponed games and remove them
+        # Remove postponed games
         for row in response.data:
             try:
                 url = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={row['game_pk']}"
@@ -325,6 +292,7 @@ def fetch_and_update_outcomes():
             except Exception:
                 continue
 
+        # Fetch outcomes for finished games
         for row in response.data:
             try:
                 game_date = row['game_date']
@@ -334,7 +302,6 @@ def fetch_and_update_outcomes():
                     continue
             except Exception:
                 continue
-
             result = fetch_game_linescore(row['game_pk'])
             if result and result['is_final']:
                 supabase.table('predictions')\
@@ -378,8 +345,28 @@ def load_results(selected_date=None):
     except Exception:
         return pd.DataFrame()
 
+def load_daily_odds(game_date):
+    try:
+        result = supabase.table('daily_odds')\
+            .select('*')\
+            .eq('game_date', game_date.isoformat())\
+            .execute()
+        return {row['game_pk']: row for row in result.data}
+    except Exception:
+        return {}
+
+def save_daily_odds(game_date, game_pk, nrfi_odds, yrfi_odds):
+    try:
+        supabase.table('daily_odds').upsert({
+            'game_date': game_date.isoformat(),
+            'game_pk':   game_pk,
+            'nrfi_odds': int(nrfi_odds),
+            'yrfi_odds': int(yrfi_odds),
+        }, on_conflict='game_date,game_pk').execute()
+    except Exception:
+        pass
+
 def resolve_bankroll_bets():
-    """Auto-resolve completed bets and update bankroll history for all dates."""
     try:
         # Resolve straight bets
         unresolved = supabase.table('bankroll')\
@@ -395,16 +382,13 @@ def resolve_bankroll_bets():
                 .eq('game_pk', bet['game_pk'])\
                 .eq('game_date', bet['game_date'])\
                 .execute()
-
             if not outcome.data or outcome.data[0]['outcome_nrfi'] is None:
                 continue
-
             outcome_nrfi = outcome.data[0]['outcome_nrfi']
-            bet_won = (bet['bet_type'] == 'NRFI' and outcome_nrfi) or \
-                      (bet['bet_type'] == 'YRFI' and not outcome_nrfi)
-            profit_loss = (bet['potential_payout'] - bet['bet_amount']) \
-                          if bet_won else -bet['bet_amount']
-
+            bet_won      = (bet['bet_type'] == 'NRFI' and outcome_nrfi) or \
+                           (bet['bet_type'] == 'YRFI' and not outcome_nrfi)
+            profit_loss  = (bet['potential_payout'] - bet['bet_amount']) \
+                           if bet_won else -bet['bet_amount']
             supabase.table('bankroll').update({
                 'outcome_nrfi': outcome_nrfi,
                 'bet_won':      bet_won,
@@ -423,7 +407,6 @@ def resolve_bankroll_bets():
             game_pks  = parlay['game_pk'].split('_')
             bet_types = parlay['bet_type'].split('+')
             game_date = parlay['game_date']
-
             all_resolved = True
             parlay_won   = True
 
@@ -433,11 +416,9 @@ def resolve_bankroll_bets():
                     .eq('game_pk', pk)\
                     .eq('game_date', game_date)\
                     .execute()
-
                 if not outcome.data or outcome.data[0]['outcome_nrfi'] is None:
                     all_resolved = False
                     break
-
                 outcome_nrfi = outcome.data[0]['outcome_nrfi']
                 leg_won = (bt == 'NRFI' and outcome_nrfi) or \
                           (bt == 'YRFI' and not outcome_nrfi)
@@ -453,7 +434,7 @@ def resolve_bankroll_bets():
                     'resolved':    True
                 }).eq('id', parlay['id']).execute()
 
-        # Update bankroll history for ALL dates with resolved bets
+        # Update bankroll history for ALL dates
         all_dates_result = supabase.table('bankroll')\
             .select('game_date')\
             .eq('resolved', True)\
@@ -467,17 +448,14 @@ def resolve_bankroll_bets():
                 .eq('game_date', bet_date)\
                 .eq('resolved', True)\
                 .execute()
-
             if not resolved_bets.data:
                 continue
 
-            # Check if already properly logged (not the default $100)
             existing = supabase.table('bankroll_history')\
-                .select('id, ending_bankroll, daily_pl')\
+                .select('id, ending_bankroll, bets_placed')\
                 .eq('game_date', bet_date)\
                 .execute()
 
-            # Skip if already logged with real P&L
             if existing.data and existing.data[0].get('bets_placed', 0) > 0:
                 continue
 
@@ -487,7 +465,6 @@ def resolve_bankroll_bets():
             )
             bets_won = sum(1 for b in resolved_bets.data if b['bet_won'])
 
-            # Get previous day's ending bankroll
             prev = supabase.table('bankroll_history')\
                 .select('ending_bankroll')\
                 .lt('game_date', bet_date)\
@@ -495,7 +472,7 @@ def resolve_bankroll_bets():
                 .limit(1)\
                 .execute()
 
-            start_br    = prev.data[0]['ending_bankroll'] if prev.data else 100.0
+            start_br     = prev.data[0]['ending_bankroll'] if prev.data else 100.0
             new_bankroll = start_br + daily_pl
 
             supabase.table('bankroll_history').upsert({
@@ -514,7 +491,6 @@ def resolve_bankroll_bets():
 st.title("⚾ xFIR — Expected First Inning Runs")
 st.markdown("Today's MLB games with first inning scoring predictions and EV calculator.")
 
-# Date selector
 col_prev, col_date, col_next = st.columns([1, 3, 1])
 
 if 'selected_date' not in st.session_state:
@@ -543,7 +519,6 @@ st.markdown("---")
 games = get_todays_games(selected_date)
 month = selected_date.month
 
-# Collect predictions
 predictions_by_game = {}
 for g in games:
     away = g['away_team']
@@ -560,7 +535,6 @@ for g in games:
         'yrfi_prob': 1 - neither
     }
 
-# Save predictions once per session per date
 session_key = f"saved_{selected_date}"
 if session_key not in st.session_state:
     save_predictions_to_db(games, predictions_by_game, selected_date)
@@ -856,7 +830,6 @@ with tab3:
         nrfi_ct  = results_df['outcome_nrfi'].sum()
         avg_prob = results_df['nrfi_prob'].mean()
 
-        # Load ALL results regardless of date filter for total accuracy
         all_results = load_results(selected_date=None)
         if not all_results.empty:
             all_results['correct'] = (
@@ -871,12 +844,12 @@ with tab3:
             correct_all = 0
 
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Games Tracked (Today)",    total)
-        m2.metric("Today's Accuracy",         f"{correct/total:.1%}")
-        m3.metric("Total Model Accuracy",     f"{correct_all/total_all:.1%}" if total_all > 0 else "N/A",
-                delta=f"{total_all} games total")
-        m4.metric("Actual NRFI Rate",         f"{nrfi_ct/total:.1%}")
-        m5.metric("Avg Predicted NRFI Prob",  f"{avg_prob:.1%}")
+        m1.metric("Games Tracked",        total)
+        m2.metric("Today's Accuracy",     f"{correct/total:.1%}")
+        m3.metric("Total Model Accuracy", f"{correct_all/total_all:.1%}" if total_all > 0 else "N/A",
+                  delta=f"{total_all} games total")
+        m4.metric("Actual NRFI Rate",     f"{nrfi_ct/total:.1%}")
+        m5.metric("Avg Predicted NRFI",   f"{avg_prob:.1%}")
 
         st.markdown("#### Calibration")
         results_df['prob_bucket'] = pd.cut(
@@ -907,7 +880,7 @@ with tab3:
         st.markdown("#### ✏️ Manual Override")
         st.caption("Use this if auto-fetch missed a game result.")
         try:
-            today_iso = date.today().isoformat()
+            today_iso  = date.today().isoformat()
             pending_df = pd.DataFrame(
                 supabase.table('predictions')
                 .select('*')
@@ -939,10 +912,8 @@ with tab4:
     st.subheader("💰 Bankroll Manager")
     st.caption("Enter today's NRFI/YRFI odds from your sportsbook. The model will recommend the top 5 bets and a 2-leg parlay using fractional Kelly sizing.")
 
-    # Run resolve on every load
     resolve_bankroll_bets()
 
-    # Get current bankroll
     try:
         bankroll_result = supabase.table('bankroll_history')\
             .select('ending_bankroll, game_date')\
@@ -981,64 +952,58 @@ with tab4:
 
     st.markdown("---")
 
-    # Load saved odds for today
-saved_odds = load_daily_odds(selected_date)
+    # Load saved odds
+    saved_odds = load_daily_odds(selected_date)
 
-st.subheader("📋 Enter Today's Odds")
-st.caption("Odds are saved automatically and persist through the day.")
+    st.subheader("📋 Enter Today's Odds")
+    st.caption("Odds are saved automatically and persist through the day.")
 
     odds_inputs = {}
-    odds_changed = False
 
-        for i, game in enumerate(games):
-            away      = game['away_team']
-            home      = game['home_team']
-            game_time = game['game_time']
-            pk        = str(game['game_pk'])
+    for i, game in enumerate(games):
+        away      = game['away_team']
+        home      = game['home_team']
+        game_time = game['game_time']
+        pk        = str(game['game_pk'])
 
-            # Use saved odds if available, otherwise use defaults
-            saved = saved_odds.get(pk, {})
-            default_nrfi = saved.get('nrfi_odds', -115)
-            default_yrfi = saved.get('yrfi_odds', -105)
+        saved        = saved_odds.get(pk, {})
+        default_nrfi = saved.get('nrfi_odds', -115)
+        default_yrfi = saved.get('yrfi_odds', -105)
 
-            col_label, col_nrfi, col_yrfi = st.columns([3, 1, 1])
-            with col_label:
-                st.markdown(f"**{away} @ {home}** — {game_time}")
-            with col_nrfi:
-                nrfi_odds = st.number_input(
-                    "NRFI", value=default_nrfi, step=5,
-                    key=f"fin_nrfi_{i}",
-                    label_visibility="visible"
-                )
-            with col_yrfi:
-                yrfi_odds = st.number_input(
-                    "YRFI", value=default_yrfi, step=5,
-                    key=f"fin_yrfi_{i}",
-                    label_visibility="visible"
-                )
+        col_label, col_nrfi, col_yrfi = st.columns([3, 1, 1])
+        with col_label:
+            st.markdown(f"**{away} @ {home}** — {game_time}")
+        with col_nrfi:
+            nrfi_odds = st.number_input(
+                "NRFI", value=default_nrfi, step=5,
+                key=f"fin_nrfi_{i}",
+                label_visibility="visible"
+            )
+        with col_yrfi:
+            yrfi_odds = st.number_input(
+                "YRFI", value=default_yrfi, step=5,
+                key=f"fin_yrfi_{i}",
+                label_visibility="visible"
+            )
 
-            odds_inputs[pk] = {'nrfi_odds': nrfi_odds, 'yrfi_odds': yrfi_odds}
+        odds_inputs[pk] = {'nrfi_odds': nrfi_odds, 'yrfi_odds': yrfi_odds}
 
-            # Save if changed from stored value
-            if nrfi_odds != default_nrfi or yrfi_odds != default_yrfi:
-                save_daily_odds(selected_date, pk, nrfi_odds, yrfi_odds)
+        if nrfi_odds != default_nrfi or yrfi_odds != default_yrfi:
+            save_daily_odds(selected_date, pk, nrfi_odds, yrfi_odds)
 
-        st.caption("✅ Odds auto-save when changed.")
-
+    st.caption("✅ Odds auto-save when changed.")
     st.markdown("---")
 
-    # Kelly sizing
     KELLY_FRACTION = 0.25
     MIN_EDGE       = 0.03
 
     def kelly_bet(prob, odds, bankroll, fraction=KELLY_FRACTION):
-        b      = american_to_decimal(odds) - 1
-        q      = 1 - prob
-        kelly  = max(0, (b * prob - q) / b)
-        bet    = kelly * fraction * bankroll
+        b     = american_to_decimal(odds) - 1
+        q     = 1 - prob
+        kelly = max(0, (b * prob - q) / b)
+        bet   = kelly * fraction * bankroll
         return round(bet, 2), round(kelly * 100, 2)
 
-    # Calculate best side per game
     all_bets = []
     for i, game in enumerate(games):
         pk   = str(game['game_pk'])
@@ -1068,18 +1033,18 @@ st.caption("Odds are saved automatically and persist through the day.")
         if best_edge >= MIN_EDGE:
             bet_amount, kelly_pct = kelly_bet(best_prob, best_odds, current_bankroll)
             all_bets.append({
-                'game_pk':        pk,
-                'away_team':      away,
-                'home_team':      home,
-                'game_time':      game['game_time'],
-                'bet_type':       best_side,
-                'model_prob':     best_prob,
-                'odds':           best_odds,
-                'implied_prob':   american_to_implied(best_odds),
-                'edge':           best_edge,
-                'ev':             best_ev,
-                'kelly_pct':      kelly_pct,
-                'bet_amount':     bet_amount,
+                'game_pk':          pk,
+                'away_team':        away,
+                'home_team':        home,
+                'game_time':        game['game_time'],
+                'bet_type':         best_side,
+                'model_prob':       best_prob,
+                'odds':             best_odds,
+                'implied_prob':     american_to_implied(best_odds),
+                'edge':             best_edge,
+                'ev':               best_ev,
+                'kelly_pct':        kelly_pct,
+                'bet_amount':       bet_amount,
                 'potential_payout': round(bet_amount * american_to_decimal(best_odds), 2),
             })
 
@@ -1191,7 +1156,6 @@ st.caption("Odds are saved automatically and persist through the day.")
                 except Exception as e:
                     st.error(f"Could not place bets: {e}")
 
-    # Bankroll history display
     st.markdown("---")
     st.subheader("📈 Bankroll History")
 
