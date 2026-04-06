@@ -1258,51 +1258,62 @@ with tab4:
 
             # Strategy comparison
             try:
-                all_bets_df = pd.DataFrame(
-                    supabase.table('bankroll')
-                    .select('game_date, strategy, profit_loss, bet_won, resolved')
-                    .eq('resolved', True)
-                    .execute().data
-                )
+    all_bets_df = pd.DataFrame(
+        supabase.table('bankroll')
+        .select('game_date, strategy, profit_loss, bet_won, resolved')
+        .eq('resolved', True)
+        .execute().data
+    )
 
-                if not all_bets_df.empty and 'strategy' in all_bets_df.columns:
-                    all_bets_df['game_date'] = pd.to_datetime(all_bets_df['game_date'])
+    if not all_bets_df.empty and 'strategy' in all_bets_df.columns:
+        all_bets_df['game_date'] = pd.to_datetime(all_bets_df['game_date']).dt.date
 
-                    ev_bets   = all_bets_df[all_bets_df['strategy'] == 'ev'].copy()
-                    prob_bets_hist = all_bets_df[all_bets_df['strategy'] == 'prob'].copy()
+        ev_bets        = all_bets_df[all_bets_df['strategy'] == 'ev'].copy()
+        prob_bets_hist = all_bets_df[all_bets_df['strategy'] == 'prob'].copy()
 
-                    ev_cumpl   = ev_bets.groupby('game_date')['profit_loss'].sum().cumsum()
-                    prob_cumpl = prob_bets_hist.groupby('game_date')['profit_loss'].sum().cumsum()
+        ev_daily   = ev_bets.groupby('game_date')['profit_loss'].sum()
+        prob_daily = prob_bets_hist.groupby('game_date')['profit_loss'].sum()
 
-                    if not ev_cumpl.empty or not prob_cumpl.empty:
-                        chart_df = pd.DataFrame({
-                            'EV Strategy':          ev_cumpl,
-                            'Probability Strategy': prob_cumpl
-                        }).ffill().fillna(0)
+        # Get all unique dates across both strategies
+        all_dates = sorted(set(ev_daily.index) | set(prob_daily.index))
 
-                        st.markdown("#### 📊 Strategy Comparison — Cumulative P&L")
-                        st.line_chart(chart_df, use_container_width=True)
+        chart_df = pd.DataFrame(index=all_dates)
+        chart_df['EV Strategy']          = ev_daily.reindex(all_dates).fillna(0).cumsum()
+        chart_df['Probability Strategy'] = prob_daily.reindex(all_dates).fillna(0).cumsum()
+        chart_df.index = chart_df.index.astype(str)
 
-                        sc1, sc2 = st.columns(2)
-                        with sc1:
-                            st.markdown("**EV Strategy**")
-                            if not ev_bets.empty:
-                                st.metric("Total P&L",   f"${ev_bets['profit_loss'].sum():.2f}")
-                                st.metric("Win Rate",    f"{ev_bets['bet_won'].mean():.1%}")
-                                st.metric("Bets Placed", len(ev_bets))
-                            else:
-                                st.info("No EV bets placed yet.")
-                        with sc2:
-                            st.markdown("**Probability Strategy**")
-                            if not prob_bets_hist.empty:
-                                st.metric("Total P&L",   f"${prob_bets_hist['profit_loss'].sum():.2f}")
-                                st.metric("Win Rate",    f"{prob_bets_hist['bet_won'].mean():.1%}")
-                                st.metric("Bets Placed", len(prob_bets_hist))
-                            else:
-                                st.info("No Probability bets placed yet.")
+        st.markdown("#### 📊 Strategy Comparison — Cumulative P&L")
 
-            except Exception:
-                pass
+        # Summary metrics side by side
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            st.markdown("**🎯 EV Strategy**")
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Total P&L",    f"${ev_bets['profit_loss'].sum():.2f}" if not ev_bets.empty else "$0.00")
+            col_b.metric("Win Rate",     f"{ev_bets['bet_won'].mean():.1%}" if not ev_bets.empty else "N/A")
+            col_c.metric("Bets Placed",  len(ev_bets) if not ev_bets.empty else 0)
+        with sc2:
+            st.markdown("**🔵 Probability Strategy**")
+            col_d, col_e, col_f = st.columns(3)
+            col_d.metric("Total P&L",    f"${prob_bets_hist['profit_loss'].sum():.2f}" if not prob_bets_hist.empty else "$0.00")
+            col_e.metric("Win Rate",     f"{prob_bets_hist['bet_won'].mean():.1%}" if not prob_bets_hist.empty else "N/A")
+            col_f.metric("Bets Placed",  len(prob_bets_hist) if not prob_bets_hist.empty else 0)
+
+        st.line_chart(chart_df, use_container_width=True)
+
+        # Daily breakdown table
+        st.markdown("#### Daily P&L by Strategy")
+        daily_breakdown = pd.DataFrame({
+            'Date':                 [str(d) for d in all_dates],
+            'EV P&L':               [f"${ev_daily.get(d, 0):.2f}" for d in all_dates],
+            'Prob P&L':             [f"${prob_daily.get(d, 0):.2f}" for d in all_dates],
+            'EV Cumulative':        [f"${chart_df.loc[str(d), 'EV Strategy']:.2f}" for d in all_dates],
+            'Prob Cumulative':      [f"${chart_df.loc[str(d), 'Probability Strategy']:.2f}" for d in all_dates],
+        })
+        st.dataframe(daily_breakdown, use_container_width=True, hide_index=True)
+
+except Exception:
+    pass
 
             st.markdown("#### 📈 Overall Bankroll")
             st.line_chart(
