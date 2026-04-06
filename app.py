@@ -639,8 +639,8 @@ with tab1:
                 st.markdown("**Scoreless 1st Inning (NRFI)**")
                 pk_str = str(game['game_pk'])
                 saved_t1 = saved_odds_tab1.get(pk_str, {})
-                default_nrfi_t1 = saved_ti.get('nrfi_odds', -110)
-                default_nrfi_t1 = saved_ti.get('yrfi_odds', -110)
+                default_nrfi_t1 = saved_t1.get('nrfi_odds', -110)
+                default_nrfi_t1 = saved_t1.get('yrfi_odds', -110)
 
                 
                 odds_scoreless = st.number_input(
