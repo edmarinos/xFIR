@@ -1197,112 +1197,112 @@ with tab4:
             ap_kelly, ap_kelly_pct = kelly_bet(ap_prob, ap_am, current_bankroll)
 
         if st.button("✅ Confirm & Place Bets", type="primary"):
-    try:
-        today     = date.today().isoformat()
-        rows      = []
-
-        # EV strategy bets
-        for b in top5:
-            rows.append({
-                'game_date':        today,
-                'game_pk':          b['game_pk'],
-                'away_team':        b['away_team'],
-                'home_team':        b['home_team'],
-                'bet_type':         b['bet_type'],
-                'model_prob':       float(b['model_prob']),
-                'odds':             int(b['odds']),
-                'implied_prob':     float(b['implied_prob']),
-                'edge':             float(b['edge']),
-                'ev':               float(b['ev']),
-                'kelly_pct':        float(b['kelly_pct']),
-                'bet_amount':       float(b['bet_amount']),
-                'potential_payout': float(b['potential_payout']),
-                'is_parlay':        False,
-                'resolved':         False,
-                'strategy':         'ev',
-            })
-
-        if len(top2) >= 2:
-            ap_prob    = top2[0]['model_prob'] * top2[1]['model_prob']
-            ap_decimal = american_to_decimal(top2[0]['odds']) * american_to_decimal(top2[1]['odds'])
-            ap_payout  = ap_decimal - 1
-            ap_am      = int(ap_payout * 100) if ap_payout >= 1 else int(-100 / ap_payout)
-            ap_ev      = (ap_prob * ap_payout) - (1 - ap_prob)
-            ap_kelly, ap_kelly_pct = kelly_bet(ap_prob, ap_am, current_bankroll)
-            rows.append({
-                'game_date':        today,
-                'game_pk':          f"{top2[0]['game_pk']}_{top2[1]['game_pk']}",
-                'away_team':        f"{top2[0]['away_team']}+{top2[1]['away_team']}",
-                'home_team':        f"{top2[0]['home_team']}+{top2[1]['home_team']}",
-                'bet_type':         f"{top2[0]['bet_type']}+{top2[1]['bet_type']}",
-                'model_prob':       float(ap_prob),
-                'odds':             int(ap_am),
-                'implied_prob':     float(1 / ap_decimal),
-                'edge':             float(ap_prob - (1 / ap_decimal)),
-                'ev':               float(ap_ev),
-                'kelly_pct':        float(ap_kelly_pct),
-                'bet_amount':       float(ap_kelly),
-                'potential_payout': float(ap_kelly * ap_decimal),
-                'is_parlay':        True,
-                'parlay_id':        f"parlay_{today}_ev",
-                'resolved':         False,
-                'strategy':         'ev',
-            })
-
-        # Probability strategy bets
-        for b in top5_prob:
-            rows.append({
-                'game_date':        today,
-                'game_pk':          b['game_pk'],
-                'away_team':        b['away_team'],
-                'home_team':        b['home_team'],
-                'bet_type':         b['bet_type'],
-                'model_prob':       float(b['model_prob']),
-                'odds':             int(b['odds']),
-                'implied_prob':     float(b['implied_prob']),
-                'edge':             float(b['edge']),
-                'ev':               float(b['ev']),
-                'kelly_pct':        float(b['kelly_pct']),
-                'bet_amount':       float(b['bet_amount']),
-                'potential_payout': float(b['potential_payout']),
-                'is_parlay':        False,
-                'resolved':         False,
-                'strategy':         'prob',
-            })
-
-        if len(top2_prob) >= 2:
-            pp_prob    = top2_prob[0]['model_prob'] * top2_prob[1]['model_prob']
-            pp_decimal = american_to_decimal(top2_prob[0]['odds']) * american_to_decimal(top2_prob[1]['odds'])
-            pp_payout  = pp_decimal - 1
-            pp_am      = int(pp_payout * 100) if pp_payout >= 1 else int(-100 / pp_payout)
-            pp_ev      = (pp_prob * pp_payout) - (1 - pp_prob)
-            pp_kelly, pp_kelly_pct = kelly_bet(pp_prob, pp_am, current_bankroll)
-            rows.append({
-                'game_date':        today,
-                'game_pk':          f"{top2_prob[0]['game_pk']}_{top2_prob[1]['game_pk']}",
-                'away_team':        f"{top2_prob[0]['away_team']}+{top2_prob[1]['away_team']}",
-                'home_team':        f"{top2_prob[0]['home_team']}+{top2_prob[1]['home_team']}",
-                'bet_type':         f"{top2_prob[0]['bet_type']}+{top2_prob[1]['bet_type']}",
-                'model_prob':       float(pp_prob),
-                'odds':             int(pp_am),
-                'implied_prob':     float(1 / pp_decimal),
-                'edge':             float(pp_prob - (1 / pp_decimal)),
-                'ev':               float(pp_ev),
-                'kelly_pct':        float(pp_kelly_pct),
-                'bet_amount':       float(pp_kelly),
-                'potential_payout': float(pp_kelly * pp_decimal),
-                'is_parlay':        True,
-                'parlay_id':        f"parlay_{today}_prob",
-                'resolved':         False,
-                'strategy':         'prob',
-            })
-
-        supabase.table('bankroll').insert(rows).execute()
-        st.success(f"✅ {len(rows)} bets placed ({len(top5)+1} EV + {len(top5_prob)+1} Probability)!")
-        st.rerun()
-
-    except Exception as e:
-        st.error(f"Could not place bets: {e}")
+                try:
+                    today     = date.today().isoformat()
+                    rows      = []
+            
+                    # EV strategy bets
+                    for b in top5:
+                        rows.append({
+                            'game_date':        today,
+                            'game_pk':          b['game_pk'],
+                            'away_team':        b['away_team'],
+                            'home_team':        b['home_team'],
+                            'bet_type':         b['bet_type'],
+                            'model_prob':       float(b['model_prob']),
+                            'odds':             int(b['odds']),
+                            'implied_prob':     float(b['implied_prob']),
+                            'edge':             float(b['edge']),
+                            'ev':               float(b['ev']),
+                            'kelly_pct':        float(b['kelly_pct']),
+                            'bet_amount':       float(b['bet_amount']),
+                            'potential_payout': float(b['potential_payout']),
+                            'is_parlay':        False,
+                            'resolved':         False,
+                            'strategy':         'ev',
+                        })
+            
+                    if len(top2) >= 2:
+                        ap_prob    = top2[0]['model_prob'] * top2[1]['model_prob']
+                        ap_decimal = american_to_decimal(top2[0]['odds']) * american_to_decimal(top2[1]['odds'])
+                        ap_payout  = ap_decimal - 1
+                        ap_am      = int(ap_payout * 100) if ap_payout >= 1 else int(-100 / ap_payout)
+                        ap_ev      = (ap_prob * ap_payout) - (1 - ap_prob)
+                        ap_kelly, ap_kelly_pct = kelly_bet(ap_prob, ap_am, current_bankroll)
+                        rows.append({
+                            'game_date':        today,
+                            'game_pk':          f"{top2[0]['game_pk']}_{top2[1]['game_pk']}",
+                            'away_team':        f"{top2[0]['away_team']}+{top2[1]['away_team']}",
+                            'home_team':        f"{top2[0]['home_team']}+{top2[1]['home_team']}",
+                            'bet_type':         f"{top2[0]['bet_type']}+{top2[1]['bet_type']}",
+                            'model_prob':       float(ap_prob),
+                            'odds':             int(ap_am),
+                            'implied_prob':     float(1 / ap_decimal),
+                            'edge':             float(ap_prob - (1 / ap_decimal)),
+                            'ev':               float(ap_ev),
+                            'kelly_pct':        float(ap_kelly_pct),
+                            'bet_amount':       float(ap_kelly),
+                            'potential_payout': float(ap_kelly * ap_decimal),
+                            'is_parlay':        True,
+                            'parlay_id':        f"parlay_{today}_ev",
+                            'resolved':         False,
+                            'strategy':         'ev',
+                        })
+            
+                    # Probability strategy bets
+                    for b in top5_prob:
+                        rows.append({
+                            'game_date':        today,
+                            'game_pk':          b['game_pk'],
+                            'away_team':        b['away_team'],
+                            'home_team':        b['home_team'],
+                            'bet_type':         b['bet_type'],
+                            'model_prob':       float(b['model_prob']),
+                            'odds':             int(b['odds']),
+                            'implied_prob':     float(b['implied_prob']),
+                            'edge':             float(b['edge']),
+                            'ev':               float(b['ev']),
+                            'kelly_pct':        float(b['kelly_pct']),
+                            'bet_amount':       float(b['bet_amount']),
+                            'potential_payout': float(b['potential_payout']),
+                            'is_parlay':        False,
+                            'resolved':         False,
+                            'strategy':         'prob',
+                        })
+            
+                    if len(top2_prob) >= 2:
+                        pp_prob    = top2_prob[0]['model_prob'] * top2_prob[1]['model_prob']
+                        pp_decimal = american_to_decimal(top2_prob[0]['odds']) * american_to_decimal(top2_prob[1]['odds'])
+                        pp_payout  = pp_decimal - 1
+                        pp_am      = int(pp_payout * 100) if pp_payout >= 1 else int(-100 / pp_payout)
+                        pp_ev      = (pp_prob * pp_payout) - (1 - pp_prob)
+                        pp_kelly, pp_kelly_pct = kelly_bet(pp_prob, pp_am, current_bankroll)
+                        rows.append({
+                            'game_date':        today,
+                            'game_pk':          f"{top2_prob[0]['game_pk']}_{top2_prob[1]['game_pk']}",
+                            'away_team':        f"{top2_prob[0]['away_team']}+{top2_prob[1]['away_team']}",
+                            'home_team':        f"{top2_prob[0]['home_team']}+{top2_prob[1]['home_team']}",
+                            'bet_type':         f"{top2_prob[0]['bet_type']}+{top2_prob[1]['bet_type']}",
+                            'model_prob':       float(pp_prob),
+                            'odds':             int(pp_am),
+                            'implied_prob':     float(1 / pp_decimal),
+                            'edge':             float(pp_prob - (1 / pp_decimal)),
+                            'ev':               float(pp_ev),
+                            'kelly_pct':        float(pp_kelly_pct),
+                            'bet_amount':       float(pp_kelly),
+                            'potential_payout': float(pp_kelly * pp_decimal),
+                            'is_parlay':        True,
+                            'parlay_id':        f"parlay_{today}_prob",
+                            'resolved':         False,
+                            'strategy':         'prob',
+                        })
+            
+                    supabase.table('bankroll').insert(rows).execute()
+                    st.success(f"✅ {len(rows)} bets placed ({len(top5)+1} EV + {len(top5_prob)+1} Probability)!")
+                    st.rerun()
+            
+                except Exception as e:
+                    st.error(f"Could not place bets: {e}")
 
     # ── Bankroll History ──────────────────────────────────────────────────────
     st.markdown("---")
