@@ -637,12 +637,11 @@ with tab1:
 
             with ev1:
                 st.markdown("**Scoreless 1st Inning (NRFI)**")
-                pk_str = str(game['game_pk'])
-                saved_t1 = saved_odds_tab1.get(pk_str, {})
+                pk_str          = str(game['game_pk'])
+                saved_t1        = saved_odds_tab1.get(pk_str, {})
                 default_nrfi_t1 = saved_t1.get('nrfi_odds', -110)
-                default_nrfi_t1 = saved_t1.get('yrfi_odds', -110)
-
-                
+                default_yrfi_t1 = saved_t1.get('yrfi_odds', -110)
+            
                 odds_scoreless = st.number_input(
                     "Sportsbook Odds", value=default_nrfi_t1, step=5,
                     key=f"odds_scoreless_{i}"
@@ -656,7 +655,7 @@ with tab1:
                 st.metric("EV per $100",  f"${ev_s * 100:.2f}",
                           delta="Profitable" if ev_s > 0 else "Unprofitable",
                           delta_color="normal" if ev_s > 0 else "inverse")
-
+            
             with ev2:
                 st.markdown("**At Least One Team Scores (YRFI)**")
                 odds_scoring = st.number_input(
