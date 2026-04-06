@@ -1,13 +1,14 @@
-import streamlit as st
-import numpy as np
-import pandas as pd
-import joblib
-import json
-import os
 import requests
 from datetime import date, datetime, timezone
 from supabase import create_client
 import anthropic
+
+# ── Optional OpenAI fallback ──────────────────────────────────────────────────
+try:
+    import openai as _openai
+    _OPENAI_AVAILABLE = True
+except ImportError:
+    _OPENAI_AVAILABLE = False
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -495,6 +496,75 @@ def resolve_bankroll_bets():
     except Exception as e:
         st.warning(f"Could not resolve bets: {e}")
 
+# ── AI Analyst ────────────────────────────────────────────────────────────────
+_ANALYST_STAT_KEYS = [
+    'sp_ERA', 'sp_FIP', 'sp_xFIP', 'sp_K%', 'sp_BB%',
+    'sp_WHIP', 'sp_HardHit%', 'sp_SwStr%'
+]
+
+def _stats_to_tuple(stats):
+    return tuple(stats.get(k, 0.0) for k in _ANALYST_STAT_KEYS)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_analyst_take(away_name, home_name, home_pitcher, away_pitcher,
+                     home_stats_t, away_stats_t,
+                     away_ops, away_wrc, home_ops, home_wrc,
+                     away_prob, home_prob, away_runs, home_runs, park):
+    """Call Claude Haiku to explain the prediction. Cached 1hr per game+pitchers."""
+    home_stats = dict(zip(_ANALYST_STAT_KEYS, home_stats_t))
+    away_stats = dict(zip(_ANALYST_STAT_KEYS, away_stats_t))
+    scoreless = (1 - away_prob) * (1 - home_prob)
+
+    prompt = f"""You are a sharp baseball analyst explaining a first-inning scoring prediction to a sports bettor.
+
+MATCHUP: {away_name} @ {home_name}
+
+{home_pitcher} pitching to {away_name} (top 1st):
+ERA {home_stats['sp_ERA']:.2f} | FIP {home_stats['sp_FIP']:.2f} | K% {home_stats['sp_K%']:.1%} | BB% {home_stats['sp_BB%']:.1%} | WHIP {home_stats['sp_WHIP']:.2f} | HardHit% {home_stats['sp_HardHit%']:.1%}
+
+{away_pitcher} pitching to {home_name} (bot 1st):
+ERA {away_stats['sp_ERA']:.2f} | FIP {away_stats['sp_FIP']:.2f} | K% {away_stats['sp_K%']:.1%} | BB% {away_stats['sp_BB%']:.1%} | WHIP {away_stats['sp_WHIP']:.2f} | HardHit% {away_stats['sp_HardHit%']:.1%}
+
+{away_name} offense: OPS {away_ops:.3f} | wRC+ {away_wrc:.0f}
+{home_name} offense: OPS {home_ops:.3f} | wRC+ {home_wrc:.0f}
+Park factor: {park} (100 = neutral, >100 = hitter-friendly)
+
+MODEL OUTPUT:
+- {away_name} scores top 1st: {away_prob:.1%} ({away_runs:.2f} xRuns)
+- {home_name} scores bot 1st: {home_prob:.1%} ({home_runs:.2f} xRuns)
+- Scoreless first inning: {scoreless:.1%}
+
+In 3-4 sentences, explain WHY the model predicts what it predicts. Name the 2-3 stats that most drive the result. Call out any notable mismatch between pitcher quality and the opposing lineup. Be direct — no filler."""
+
+    anthropic_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    openai_key = st.secrets.get("OPENAI_API_KEY", "")
+
+    if anthropic_key:
+        try:
+            client = anthropic.Anthropic(api_key=anthropic_key)
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=256,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return msg.content[0].text
+        except anthropic.BadRequestError as e:
+            if "credit balance" not in str(e):
+                return f"⚠️ Anthropic error: {e}"
+            # credit error — fall through to OpenAI if available
+
+    if openai_key and _OPENAI_AVAILABLE:
+        client = _openai.OpenAI(api_key=openai_key)
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=256,
+            temperature=0.7,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return resp.choices[0].message.content
+
+    return "⚠️ Credits depleted. Top up at console.anthropic.com/settings/billing or add OPENAI_API_KEY to secrets.toml."
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 st.title("⚾ xFIR — Expected First Inning Runs")
 st.markdown("Today's MLB games with first inning scoring predictions and EV calculator.")
@@ -679,6 +749,23 @@ with tab1:
                 st.success(f"✅ YRFI looks +EV at those odds (edge: {edge_e:+.1%})")
             else:
                 st.info("No strong edge detected at these odds. Try line shopping.")
+
+            # AI Analyst
+            st.markdown("#### 🤖 AI Analyst")
+            if st.button("Generate Analysis", key=f"analyst_{i}"):
+                away_offense = get_team_offense(away)
+                home_offense = get_team_offense(home)
+                park = PARK_FACTORS.get(home, 100)
+                with st.spinner("Analyzing matchup..."):
+                    take = get_analyst_take(
+                        away_name, home_name,
+                        home_pitcher_sel, away_pitcher_sel,
+                        _stats_to_tuple(home_stats), _stats_to_tuple(away_stats),
+                        away_offense.get('team_OPS', 0.720), away_offense.get('team_wRC', 100),
+                        home_offense.get('team_OPS', 0.720), home_offense.get('team_wRC', 100),
+                        away_prob, home_prob, away_runs, home_runs, park
+                    )
+                st.info(f"**AI Analyst:** {take}")
 
             st.caption("⚠️ For educational purposes only. Not financial or betting advice.")
 
@@ -1166,7 +1253,6 @@ with tab4:
         parlay_summary(top2_prob, "Probability Parlay (Top 2 Confidence Bets)")
 
     # ── Place Bets ────────────────────────────────────────────────────────────
-    # ── Place Bets ────────────────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("✅ Place Today's Bets")
     st.caption("Both EV and Probability bets are placed simultaneously.")
@@ -1401,4 +1487,3 @@ st.markdown("---")
 st.markdown("**Model:** XGBoost (classification) | Linear Regression (regression) | "
             "**Data:** Statcast 2022–2024 | **Schedule:** MLB Stats API")
 st.markdown("**Classification AUC:** 0.521 | **Regression RMSE:** 1.045")
-
