@@ -8,3 +8,4 @@ pybaseball
 joblib
 requests
 supabase
+anthropic
