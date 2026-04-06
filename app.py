@@ -7,6 +7,7 @@ import os
 import requests
 from datetime import date, datetime, timezone
 from supabase import create_client
+import anthropic
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
