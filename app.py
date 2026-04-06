@@ -564,6 +564,8 @@ with tab1:
     st.markdown(f"### {len(games)} Games Today")
     pitcher_options = ['League Average'] + sorted(pitchers_df['pitcher_name'].tolist())
 
+    saved_odds_tab1 = load_daily_odds(selected_date)
+
     for i, game in enumerate(games):
         away      = game['away_team']
         home      = game['home_team']
@@ -635,8 +637,14 @@ with tab1:
 
             with ev1:
                 st.markdown("**Scoreless 1st Inning (NRFI)**")
+                pk_str = str(game['game_pk'])
+                saved_t1 = saved_odds_tab1.get(pk_str, {})
+                default_nrfi_t1 = saved_ti.get('nrfi_odds', -110)
+                default_nrfi_t1 = saved_ti.get('yrfi_odds', -110)
+
+                
                 odds_scoreless = st.number_input(
-                    "Sportsbook Odds", value=-110, step=5,
+                    "Sportsbook Odds", value=default_nrfi_t1, step=5,
                     key=f"odds_scoreless_{i}"
                 )
                 implied_s = american_to_implied(odds_scoreless)
@@ -652,7 +660,7 @@ with tab1:
             with ev2:
                 st.markdown("**At Least One Team Scores (YRFI)**")
                 odds_scoring = st.number_input(
-                    "Sportsbook Odds", value=-110, step=5,
+                    "Sportsbook Odds", value=default_yrfi_t1, step=5,
                     key=f"odds_scoring_{i}"
                 )
                 implied_e = american_to_implied(odds_scoring)
