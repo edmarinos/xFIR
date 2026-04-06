@@ -454,7 +454,16 @@ def resolve_bankroll_bets():
                 .eq('game_date', bet_date)\
                 .execute()
 
-            if existing.data and existing.data[0].get('bets_placed', 0) > 0:
+            # Count total bets for this date
+            total_bets = supabase.table('bankroll')\
+                .select('id')\
+                .eq('game_date', bet_date)\
+                .execute()
+
+            resolved_count = len(resolved_bets.data)
+            total_count    = len(total_bets.data)
+
+            if existing.data and existing.data[0].get('bets_placed', 0) == total_count:
                 continue
 
             daily_pl = sum(
