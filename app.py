@@ -1183,7 +1183,11 @@ with tab4:
 
         best_ev   = calculate_ev(best_prob, best_odds)
         best_edge = best_prob - american_to_implied(best_odds)
-        bet_amount, kelly_pct = kelly_bet(best_prob, best_odds, current_bankroll)
+
+        # Probability strategy: size by model confidence, no edge requirement
+        bet_amount       = round(best_prob * KELLY_FRACTION * current_bankroll, 2)
+        kelly_pct        = round(best_prob * KELLY_FRACTION * 100, 2)
+        potential_payout = round(bet_amount * american_to_decimal(best_odds), 2)
 
         prob_bets.append({
             'game_pk':          pk,
