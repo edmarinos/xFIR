@@ -209,34 +209,52 @@ def get_todays_games(selected_date):
     return games
 
 # ── Supabase functions ────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def fetch_game_linescore(game_pk):
     try:
-        url = f"https://statsapi.mlb.com/api/v1/schedule?gamePk={game_pk}"
-        status_data = requests.get(url, timeout=10).json()
-        dates = status_data.get('dates', [])
-        if not dates:
+        url  = f"https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
+        data = requests.get(url, timeout=10).json()
+
+        game_data     = data.get('gameData', {})
+        live_data     = data.get('liveData', {})
+        status        = game_data.get('status', {})
+        abstract_state = status.get('abstractGameState', '')
+        detailed_state = status.get('detailedState', '')
+
+        # Skip postponed games
+        if 'Postponed' in detailed_state:
             return None
-        game_status    = dates[0]['games'][0].get('status', {})
-        abstract_state = game_status.get('abstractGameState', '')
-        if abstract_state != 'Final':
+
+        linescore      = live_data.get('linescore', {})
+        current_inning = linescore.get('currentInning', 0)
+        inning_state   = linescore.get('inningState', '')
+        innings        = linescore.get('innings', [])
+
+        # First inning is complete if:
+        # - Game is final, OR
+        # - We're in the top of inning 2 or later (bottom of 1st finished)
+        first_inning_complete = (
+            abstract_state == 'Final' or
+            (current_inning >= 2) or
+            (current_inning == 1 and inning_state in ['Middle', 'End'])
+        )
+
+        if not first_inning_complete or not innings:
             return None
-        url2 = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
-        data = requests.get(url2, timeout=10).json()
-        innings = data.get('innings', [])
-        if not innings:
-            return None
+
         first_inning = innings[0]
-        away_runs = first_inning.get('away', {}).get('runs', None)
-        home_runs = first_inning.get('home', {}).get('runs', None)
+        away_runs    = first_inning.get('away', {}).get('runs', None)
+        home_runs    = first_inning.get('home', {}).get('runs', None)
+
         if away_runs is None or home_runs is None:
             return None
+
         return {
-            'away_runs_1st': away_runs,
-            'home_runs_1st': home_runs,
+            'away_runs_1st':  away_runs,
+            'home_runs_1st':  home_runs,
             'total_runs_1st': away_runs + home_runs,
-            'nrfi': (away_runs + home_runs) == 0,
-            'is_final': True
+            'nrfi':           (away_runs + home_runs) == 0,
+            'is_final':       True
         }
     except Exception:
         return None
