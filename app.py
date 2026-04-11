@@ -7,14 +7,6 @@ import os
 import requests
 from datetime import date, datetime, timezone
 from supabase import create_client
-import anthropic
-
-# ── Optional OpenAI fallback ──────────────────────────────────────────────────
-try:
-    import openai as _openai
-    _OPENAI_AVAILABLE = True
-except ImportError:
-    _OPENAI_AVAILABLE = False
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -462,16 +454,7 @@ def resolve_bankroll_bets():
                 .eq('game_date', bet_date)\
                 .execute()
 
-            # Count total bets for this date
-            total_bets = supabase.table('bankroll')\
-                .select('id')\
-                .eq('game_date', bet_date)\
-                .execute()
-
-            resolved_count = len(resolved_bets.data)
-            total_count    = len(total_bets.data)
-
-            if existing.data and existing.data[0].get('bets_placed', 0) == total_count:
+            if existing.data and existing.data[0].get('bets_placed', 0) > 0:
                 continue
 
             daily_pl = sum(
@@ -501,75 +484,6 @@ def resolve_bankroll_bets():
 
     except Exception as e:
         st.warning(f"Could not resolve bets: {e}")
-
-# ── AI Analyst ────────────────────────────────────────────────────────────────
-_ANALYST_STAT_KEYS = [
-    'sp_ERA', 'sp_FIP', 'sp_xFIP', 'sp_K%', 'sp_BB%',
-    'sp_WHIP', 'sp_HardHit%', 'sp_SwStr%'
-]
-
-def _stats_to_tuple(stats):
-    return tuple(stats.get(k, 0.0) for k in _ANALYST_STAT_KEYS)
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_analyst_take(away_name, home_name, home_pitcher, away_pitcher,
-                     home_stats_t, away_stats_t,
-                     away_ops, away_wrc, home_ops, home_wrc,
-                     away_prob, home_prob, away_runs, home_runs, park):
-    """Call Claude Haiku to explain the prediction. Cached 1hr per game+pitchers."""
-    home_stats = dict(zip(_ANALYST_STAT_KEYS, home_stats_t))
-    away_stats = dict(zip(_ANALYST_STAT_KEYS, away_stats_t))
-    scoreless = (1 - away_prob) * (1 - home_prob)
-
-    prompt = f"""You are a sharp baseball analyst explaining a first-inning scoring prediction to a sports bettor.
-
-MATCHUP: {away_name} @ {home_name}
-
-{home_pitcher} pitching to {away_name} (top 1st):
-ERA {home_stats['sp_ERA']:.2f} | FIP {home_stats['sp_FIP']:.2f} | K% {home_stats['sp_K%']:.1%} | BB% {home_stats['sp_BB%']:.1%} | WHIP {home_stats['sp_WHIP']:.2f} | HardHit% {home_stats['sp_HardHit%']:.1%}
-
-{away_pitcher} pitching to {home_name} (bot 1st):
-ERA {away_stats['sp_ERA']:.2f} | FIP {away_stats['sp_FIP']:.2f} | K% {away_stats['sp_K%']:.1%} | BB% {away_stats['sp_BB%']:.1%} | WHIP {away_stats['sp_WHIP']:.2f} | HardHit% {away_stats['sp_HardHit%']:.1%}
-
-{away_name} offense: OPS {away_ops:.3f} | wRC+ {away_wrc:.0f}
-{home_name} offense: OPS {home_ops:.3f} | wRC+ {home_wrc:.0f}
-Park factor: {park} (100 = neutral, >100 = hitter-friendly)
-
-MODEL OUTPUT:
-- {away_name} scores top 1st: {away_prob:.1%} ({away_runs:.2f} xRuns)
-- {home_name} scores bot 1st: {home_prob:.1%} ({home_runs:.2f} xRuns)
-- Scoreless first inning: {scoreless:.1%}
-
-In 3-4 sentences, explain WHY the model predicts what it predicts. Name the 2-3 stats that most drive the result. Call out any notable mismatch between pitcher quality and the opposing lineup. Be direct — no filler."""
-
-    anthropic_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-    openai_key = st.secrets.get("OPENAI_API_KEY", "")
-
-    if anthropic_key:
-        try:
-            client = anthropic.Anthropic(api_key=anthropic_key)
-            msg = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=256,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return msg.content[0].text
-        except anthropic.BadRequestError as e:
-            if "credit balance" not in str(e):
-                return f"⚠️ Anthropic error: {e}"
-            # credit error — fall through to OpenAI if available
-
-    if openai_key and _OPENAI_AVAILABLE:
-        client = _openai.OpenAI(api_key=openai_key)
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            max_tokens=256,
-            temperature=0.7,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return resp.choices[0].message.content
-
-    return "⚠️ Credits depleted. Top up at console.anthropic.com/settings/billing or add OPENAI_API_KEY to secrets.toml."
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 st.title("⚾ xFIR — Expected First Inning Runs")
@@ -640,8 +554,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.markdown(f"### {len(games)} Games Today")
     pitcher_options = ['League Average'] + sorted(pitchers_df['pitcher_name'].tolist())
-
-    saved_odds_tab1 = load_daily_odds(selected_date)
 
     for i, game in enumerate(games):
         away      = game['away_team']
@@ -714,13 +626,8 @@ with tab1:
 
             with ev1:
                 st.markdown("**Scoreless 1st Inning (NRFI)**")
-                pk_str          = str(game['game_pk'])
-                saved_t1        = saved_odds_tab1.get(pk_str, {})
-                default_nrfi_t1 = saved_t1.get('nrfi_odds', -110)
-                default_yrfi_t1 = saved_t1.get('yrfi_odds', -110)
-            
                 odds_scoreless = st.number_input(
-                    "Sportsbook Odds", value=default_nrfi_t1, step=5,
+                    "Sportsbook Odds", value=-110, step=5,
                     key=f"odds_scoreless_{i}"
                 )
                 implied_s = american_to_implied(odds_scoreless)
@@ -732,11 +639,11 @@ with tab1:
                 st.metric("EV per $100",  f"${ev_s * 100:.2f}",
                           delta="Profitable" if ev_s > 0 else "Unprofitable",
                           delta_color="normal" if ev_s > 0 else "inverse")
-            
+
             with ev2:
                 st.markdown("**At Least One Team Scores (YRFI)**")
                 odds_scoring = st.number_input(
-                    "Sportsbook Odds", value=default_yrfi_t1, step=5,
+                    "Sportsbook Odds", value=-110, step=5,
                     key=f"odds_scoring_{i}"
                 )
                 implied_e = american_to_implied(odds_scoring)
@@ -755,23 +662,6 @@ with tab1:
                 st.success(f"✅ YRFI looks +EV at those odds (edge: {edge_e:+.1%})")
             else:
                 st.info("No strong edge detected at these odds. Try line shopping.")
-
-            # AI Analyst
-            st.markdown("#### 🤖 AI Analyst")
-            if st.button("Generate Analysis", key=f"analyst_{i}"):
-                away_offense = get_team_offense(away)
-                home_offense = get_team_offense(home)
-                park = PARK_FACTORS.get(home, 100)
-                with st.spinner("Analyzing matchup..."):
-                    take = get_analyst_take(
-                        away_name, home_name,
-                        home_pitcher_sel, away_pitcher_sel,
-                        _stats_to_tuple(home_stats), _stats_to_tuple(away_stats),
-                        away_offense.get('team_OPS', 0.720), away_offense.get('team_wRC', 100),
-                        home_offense.get('team_OPS', 0.720), home_offense.get('team_wRC', 100),
-                        away_prob, home_prob, away_runs, home_runs, park
-                    )
-                st.info(f"**AI Analyst:** {take}")
 
             st.caption("⚠️ For educational purposes only. Not financial or betting advice.")
 
@@ -1183,13 +1073,7 @@ with tab4:
 
         best_ev   = calculate_ev(best_prob, best_odds)
         best_edge = best_prob - american_to_implied(best_odds)
-
-        # Probability strategy: size by model confidence, no edge requirement
         bet_amount, kelly_pct = kelly_bet(best_prob, best_odds, current_bankroll)
-        if bet_amount == 0:
-            bet_amount   = round(0.02 * current_bankroll, 2)
-            kelly_pct    = 2.0
-        potential_payout = round(bet_amount * american_to_decimal(best_odds), 2)
 
         prob_bets.append({
             'game_pk':          pk,
@@ -1267,7 +1151,7 @@ with tab4:
     # ── Place Bets ────────────────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("✅ Place Today's Bets")
-    st.caption("Both EV and Probability bets are placed simultaneously.")
+    st.caption("Choose which strategy to place — EV-based or Probability-based.")
 
     today_bets_result = supabase.table('bankroll')\
         .select('id')\
@@ -1278,13 +1162,31 @@ with tab4:
     if today_bets_result.data:
         st.info("✅ Bets already placed for today. Check back after games finish for results.")
     else:
+        bet_strategy = st.radio(
+            "Select betting strategy:",
+            options=["EV-Based (top 5 edge)", "Probability-Based (top 5 confidence)"],
+            horizontal=True
+        )
+
+        active_top5 = top5      if bet_strategy == "EV-Based (top 5 edge)" else top5_prob
+        active_top2 = top2      if bet_strategy == "EV-Based (top 5 edge)" else top2_prob
+        strategy_tag = 'ev'     if bet_strategy == "EV-Based (top 5 edge)" else 'prob'
+
+        if len(active_top2) >= 2:
+            ap_prob    = active_top2[0]['model_prob'] * active_top2[1]['model_prob']
+            ap_decimal = american_to_decimal(active_top2[0]['odds']) * american_to_decimal(active_top2[1]['odds'])
+            ap_payout  = ap_decimal - 1
+            ap_am      = int(ap_payout * 100) if ap_payout >= 1 else int(-100 / ap_payout)
+            ap_ev      = (ap_prob * ap_payout) - (1 - ap_prob)
+            ap_kelly, ap_kelly_pct = kelly_bet(ap_prob, ap_am, current_bankroll)
+
         if st.button("✅ Confirm & Place Bets", type="primary"):
             try:
-                today = date.today().isoformat()
-                rows  = []
+                today     = date.today().isoformat()
+                parlay_id = f"parlay_{today}_{strategy_tag}"
+                rows      = []
 
-                # EV strategy bets
-                for b in top5:
+                for b in active_top5:
                     rows.append({
                         'game_date':        today,
                         'game_pk':          b['game_pk'],
@@ -1301,22 +1203,16 @@ with tab4:
                         'potential_payout': float(b['potential_payout']),
                         'is_parlay':        False,
                         'resolved':         False,
-                        'strategy':         'ev',
+                        'strategy':         strategy_tag,
                     })
 
-                if len(top2) >= 2:
-                    ap_prob    = top2[0]['model_prob'] * top2[1]['model_prob']
-                    ap_decimal = american_to_decimal(top2[0]['odds']) * american_to_decimal(top2[1]['odds'])
-                    ap_payout  = ap_decimal - 1
-                    ap_am      = int(ap_payout * 100) if ap_payout >= 1 else int(-100 / ap_payout)
-                    ap_ev      = (ap_prob * ap_payout) - (1 - ap_prob)
-                    ap_kelly, ap_kelly_pct = kelly_bet(ap_prob, ap_am, current_bankroll)
+                if len(active_top2) >= 2:
                     rows.append({
                         'game_date':        today,
-                        'game_pk':          f"{top2[0]['game_pk']}_{top2[1]['game_pk']}",
-                        'away_team':        f"{top2[0]['away_team']}+{top2[1]['away_team']}",
-                        'home_team':        f"{top2[0]['home_team']}+{top2[1]['home_team']}",
-                        'bet_type':         f"{top2[0]['bet_type']}+{top2[1]['bet_type']}",
+                        'game_pk':          f"{active_top2[0]['game_pk']}_{active_top2[1]['game_pk']}",
+                        'away_team':        f"{active_top2[0]['away_team']}+{active_top2[1]['away_team']}",
+                        'home_team':        f"{active_top2[0]['home_team']}+{active_top2[1]['home_team']}",
+                        'bet_type':         f"{active_top2[0]['bet_type']}+{active_top2[1]['bet_type']}",
                         'model_prob':       float(ap_prob),
                         'odds':             int(ap_am),
                         'implied_prob':     float(1 / ap_decimal),
@@ -1326,61 +1222,13 @@ with tab4:
                         'bet_amount':       float(ap_kelly),
                         'potential_payout': float(ap_kelly * ap_decimal),
                         'is_parlay':        True,
-                        'parlay_id':        f"parlay_{today}_ev",
+                        'parlay_id':        parlay_id,
                         'resolved':         False,
-                        'strategy':         'ev',
-                    })
-
-                # Probability strategy bets
-                for b in top5_prob:
-                    rows.append({
-                        'game_date':        today,
-                        'game_pk':          b['game_pk'],
-                        'away_team':        b['away_team'],
-                        'home_team':        b['home_team'],
-                        'bet_type':         b['bet_type'],
-                        'model_prob':       float(b['model_prob']),
-                        'odds':             int(b['odds']),
-                        'implied_prob':     float(b['implied_prob']),
-                        'edge':             float(b['edge']),
-                        'ev':               float(b['ev']),
-                        'kelly_pct':        float(b['kelly_pct']),
-                        'bet_amount':       float(b['bet_amount']),
-                        'potential_payout': float(b['potential_payout']),
-                        'is_parlay':        False,
-                        'resolved':         False,
-                        'strategy':         'prob',
-                    })
-
-                if len(top2_prob) >= 2:
-                    pp_prob    = top2_prob[0]['model_prob'] * top2_prob[1]['model_prob']
-                    pp_decimal = american_to_decimal(top2_prob[0]['odds']) * american_to_decimal(top2_prob[1]['odds'])
-                    pp_payout  = pp_decimal - 1
-                    pp_am      = int(pp_payout * 100) if pp_payout >= 1 else int(-100 / pp_payout)
-                    pp_ev      = (pp_prob * pp_payout) - (1 - pp_prob)
-                    pp_kelly, pp_kelly_pct = kelly_bet(pp_prob, pp_am, current_bankroll)
-                    rows.append({
-                        'game_date':        today,
-                        'game_pk':          f"{top2_prob[0]['game_pk']}_{top2_prob[1]['game_pk']}",
-                        'away_team':        f"{top2_prob[0]['away_team']}+{top2_prob[1]['away_team']}",
-                        'home_team':        f"{top2_prob[0]['home_team']}+{top2_prob[1]['home_team']}",
-                        'bet_type':         f"{top2_prob[0]['bet_type']}+{top2_prob[1]['bet_type']}",
-                        'model_prob':       float(pp_prob),
-                        'odds':             int(pp_am),
-                        'implied_prob':     float(1 / pp_decimal),
-                        'edge':             float(pp_prob - (1 / pp_decimal)),
-                        'ev':               float(pp_ev),
-                        'kelly_pct':        float(pp_kelly_pct),
-                        'bet_amount':       float(pp_kelly),
-                        'potential_payout': float(pp_kelly * pp_decimal),
-                        'is_parlay':        True,
-                        'parlay_id':        f"parlay_{today}_prob",
-                        'resolved':         False,
-                        'strategy':         'prob',
+                        'strategy':         strategy_tag,
                     })
 
                 supabase.table('bankroll').insert(rows).execute()
-                st.success(f"✅ {len(rows)} bets placed ({len(top5)+1} EV + {len(top5_prob)+1} Probability)!")
+                st.success(f"✅ {len(rows)} bets placed using {bet_strategy}!")
                 st.rerun()
 
             except Exception as e:
@@ -1418,51 +1266,40 @@ with tab4:
                 )
 
                 if not all_bets_df.empty and 'strategy' in all_bets_df.columns:
-                    all_bets_df['game_date'] = pd.to_datetime(all_bets_df['game_date']).dt.date
+                    all_bets_df['game_date'] = pd.to_datetime(all_bets_df['game_date'])
 
-                    ev_bets        = all_bets_df[all_bets_df['strategy'] == 'ev'].copy()
+                    ev_bets   = all_bets_df[all_bets_df['strategy'] == 'ev'].copy()
                     prob_bets_hist = all_bets_df[all_bets_df['strategy'] == 'prob'].copy()
 
-                    ev_daily   = ev_bets.groupby('game_date')['profit_loss'].sum()
-                    prob_daily = prob_bets_hist.groupby('game_date')['profit_loss'].sum()
+                    ev_cumpl   = ev_bets.groupby('game_date')['profit_loss'].sum().cumsum()
+                    prob_cumpl = prob_bets_hist.groupby('game_date')['profit_loss'].sum().cumsum()
 
-                    # Get all unique dates across both strategies
-                    all_dates = sorted(set(ev_daily.index) | set(prob_daily.index))
+                    if not ev_cumpl.empty or not prob_cumpl.empty:
+                        chart_df = pd.DataFrame({
+                            'EV Strategy':          ev_cumpl,
+                            'Probability Strategy': prob_cumpl
+                        }).ffill().fillna(0)
 
-                    chart_df = pd.DataFrame(index=all_dates)
-                    chart_df['EV Strategy']          = ev_daily.reindex(all_dates).fillna(0).cumsum()
-                    chart_df['Probability Strategy'] = prob_daily.reindex(all_dates).fillna(0).cumsum()
-                    chart_df.index = chart_df.index.astype(str)
+                        st.markdown("#### 📊 Strategy Comparison — Cumulative P&L")
+                        st.line_chart(chart_df, use_container_width=True)
 
-                    st.markdown("#### 📊 Strategy Comparison — Cumulative P&L")
-
-                    # Summary metrics side by side
-                    sc1, sc2 = st.columns(2)
-                    with sc1:
-                        st.markdown("**🎯 EV Strategy**")
-                        col_a, col_b, col_c = st.columns(3)
-                        col_a.metric("Total P&L",    f"${ev_bets['profit_loss'].sum():.2f}" if not ev_bets.empty else "$0.00")
-                        col_b.metric("Win Rate",     f"{ev_bets['bet_won'].mean():.1%}" if not ev_bets.empty else "N/A")
-                        col_c.metric("Bets Placed",  len(ev_bets) if not ev_bets.empty else 0)
-                    with sc2:
-                        st.markdown("**🔵 Probability Strategy**")
-                        col_d, col_e, col_f = st.columns(3)
-                        col_d.metric("Total P&L",    f"${prob_bets_hist['profit_loss'].sum():.2f}" if not prob_bets_hist.empty else "$0.00")
-                        col_e.metric("Win Rate",     f"{prob_bets_hist['bet_won'].mean():.1%}" if not prob_bets_hist.empty else "N/A")
-                        col_f.metric("Bets Placed",  len(prob_bets_hist) if not prob_bets_hist.empty else 0)
-
-                    st.line_chart(chart_df, use_container_width=True)
-
-                    # Daily breakdown table
-                    st.markdown("#### Daily P&L by Strategy")
-                    daily_breakdown = pd.DataFrame({
-                        'Date':                 [str(d) for d in all_dates],
-                        'EV P&L':               [f"${ev_daily.get(d, 0):.2f}" for d in all_dates],
-                        'Prob P&L':             [f"${prob_daily.get(d, 0):.2f}" for d in all_dates],
-                        'EV Cumulative':        [f"${chart_df.loc[str(d), 'EV Strategy']:.2f}" for d in all_dates],
-                        'Prob Cumulative':      [f"${chart_df.loc[str(d), 'Probability Strategy']:.2f}" for d in all_dates],
-                    })
-                    st.dataframe(daily_breakdown, use_container_width=True, hide_index=True)
+                        sc1, sc2 = st.columns(2)
+                        with sc1:
+                            st.markdown("**EV Strategy**")
+                            if not ev_bets.empty:
+                                st.metric("Total P&L",   f"${ev_bets['profit_loss'].sum():.2f}")
+                                st.metric("Win Rate",    f"{ev_bets['bet_won'].mean():.1%}")
+                                st.metric("Bets Placed", len(ev_bets))
+                            else:
+                                st.info("No EV bets placed yet.")
+                        with sc2:
+                            st.markdown("**Probability Strategy**")
+                            if not prob_bets_hist.empty:
+                                st.metric("Total P&L",   f"${prob_bets_hist['profit_loss'].sum():.2f}")
+                                st.metric("Win Rate",    f"{prob_bets_hist['bet_won'].mean():.1%}")
+                                st.metric("Bets Placed", len(prob_bets_hist))
+                            else:
+                                st.info("No Probability bets placed yet.")
 
             except Exception:
                 pass
