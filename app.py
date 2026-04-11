@@ -599,15 +599,17 @@ today_str     = selected_date.strftime('%A, %B %d %Y')
 st.markdown(f"**{today_str}**")
 st.markdown("---")
 
-# ── Auto-refresh during game hours (12PM - 1AM ET) ────────────────────────────
+# Auto-refresh during game hours (12PM - 1AM ET)
 now_et         = datetime.now(ZoneInfo('America/New_York'))
 game_hour      = now_et.hour
 in_game_window = game_hour >= 12 or game_hour < 1
 
 if in_game_window and selected_date == date.today():
-    st.info(f"🔄 Live mode — refreshing every 3 minutes. Last updated: {now_et.strftime('%I:%M %p ET')}")
-    time.sleep(180)
-    st.rerun()
+    st.caption(f"🔄 Live mode — last updated: {now_et.strftime('%I:%M %p ET')}")
+    st.markdown(
+        '<meta http-equiv="refresh" content="180">',
+        unsafe_allow_html=True
+    )
 elif selected_date == date.today():
     st.caption(f"Last updated: {now_et.strftime('%I:%M %p ET')} — auto-refresh activates at 12PM ET.")
 
