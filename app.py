@@ -5,7 +5,9 @@ import joblib
 import json
 import os
 import requests
+import time
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from supabase import create_client
 import anthropic
 
@@ -189,7 +191,6 @@ def get_todays_games(selected_date):
             home_pitcher = home.get('probablePitcher', {}).get('fullName', 'TBD')
             game_time_utc = game.get('gameDate', '')
             try:
-                from zoneinfo import ZoneInfo
                 gt = datetime.fromisoformat(game_time_utc.replace('Z', '+00:00'))
                 est = ZoneInfo('America/New_York')
                 game_time_str = gt.astimezone(est).strftime('%-I:%M %p ET')
@@ -516,10 +517,9 @@ def get_analyst_take(away_name, home_name, home_pitcher, away_pitcher,
                      home_stats_t, away_stats_t,
                      away_ops, away_wrc, home_ops, home_wrc,
                      away_prob, home_prob, away_runs, home_runs, park):
-    """Call Claude Haiku to explain the prediction. Cached 1hr per game+pitchers."""
     home_stats = dict(zip(_ANALYST_STAT_KEYS, home_stats_t))
     away_stats = dict(zip(_ANALYST_STAT_KEYS, away_stats_t))
-    scoreless = (1 - away_prob) * (1 - home_prob)
+    scoreless  = (1 - away_prob) * (1 - home_prob)
 
     prompt = f"""You are a sharp baseball analyst explaining a first-inning scoring prediction to a sports bettor.
 
@@ -543,7 +543,7 @@ MODEL OUTPUT:
 In 3-4 sentences, explain WHY the model predicts what it predicts. Name the 2-3 stats that most drive the result. Call out any notable mismatch between pitcher quality and the opposing lineup. Be direct — no filler."""
 
     anthropic_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-    openai_key = st.secrets.get("OPENAI_API_KEY", "")
+    openai_key    = st.secrets.get("OPENAI_API_KEY", "")
 
     if anthropic_key:
         try:
@@ -557,7 +557,6 @@ In 3-4 sentences, explain WHY the model predicts what it predicts. Name the 2-3 
         except anthropic.BadRequestError as e:
             if "credit balance" not in str(e):
                 return f"⚠️ Anthropic error: {e}"
-            # credit error — fall through to OpenAI if available
 
     if openai_key and _OPENAI_AVAILABLE:
         client = _openai.OpenAI(api_key=openai_key)
@@ -596,9 +595,21 @@ with col_next:
         st.session_state.selected_date += __import__('datetime').timedelta(days=1)
 
 selected_date = st.session_state.selected_date
-today_str = selected_date.strftime('%A, %B %d %Y')
+today_str     = selected_date.strftime('%A, %B %d %Y')
 st.markdown(f"**{today_str}**")
 st.markdown("---")
+
+# ── Auto-refresh during game hours (12PM - 1AM ET) ────────────────────────────
+now_et         = datetime.now(ZoneInfo('America/New_York'))
+game_hour      = now_et.hour
+in_game_window = game_hour >= 12 or game_hour < 1
+
+if in_game_window and selected_date == date.today():
+    st.info(f"🔄 Live mode — refreshing every 3 minutes. Last updated: {now_et.strftime('%I:%M %p ET')}")
+    time.sleep(180)
+    st.rerun()
+elif selected_date == date.today():
+    st.caption(f"Last updated: {now_et.strftime('%I:%M %p ET')} — auto-refresh activates at 12PM ET.")
 
 games = get_todays_games(selected_date)
 month = selected_date.month
@@ -640,7 +651,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.markdown(f"### {len(games)} Games Today")
     pitcher_options = ['League Average'] + sorted(pitchers_df['pitcher_name'].tolist())
-
     saved_odds_tab1 = load_daily_odds(selected_date)
 
     for i, game in enumerate(games):
@@ -718,8 +728,7 @@ with tab1:
                 saved_t1        = saved_odds_tab1.get(pk_str, {})
                 default_nrfi_t1 = saved_t1.get('nrfi_odds', -110)
                 default_yrfi_t1 = saved_t1.get('yrfi_odds', -110)
-            
-                odds_scoreless = st.number_input(
+                odds_scoreless  = st.number_input(
                     "Sportsbook Odds", value=default_nrfi_t1, step=5,
                     key=f"odds_scoreless_{i}"
                 )
@@ -732,7 +741,7 @@ with tab1:
                 st.metric("EV per $100",  f"${ev_s * 100:.2f}",
                           delta="Profitable" if ev_s > 0 else "Unprofitable",
                           delta_color="normal" if ev_s > 0 else "inverse")
-            
+
             with ev2:
                 st.markdown("**At Least One Team Scores (YRFI)**")
                 odds_scoring = st.number_input(
@@ -1184,12 +1193,10 @@ with tab4:
         best_ev   = calculate_ev(best_prob, best_odds)
         best_edge = best_prob - american_to_implied(best_odds)
 
-        # Probability strategy: size by model confidence, no edge requirement
         bet_amount, kelly_pct = kelly_bet(best_prob, best_odds, current_bankroll)
         if bet_amount == 0:
-            bet_amount   = round(0.02 * current_bankroll, 2)
-            kelly_pct    = 2.0
-        potential_payout = round(bet_amount * american_to_decimal(best_odds), 2)
+            bet_amount = round(0.02 * current_bankroll, 2)
+            kelly_pct  = 2.0
 
         prob_bets.append({
             'game_pk':          pk,
@@ -1207,9 +1214,9 @@ with tab4:
             'potential_payout': round(bet_amount * american_to_decimal(best_odds), 2),
         })
 
-    prob_bets  = sorted(prob_bets, key=lambda x: x['model_prob'], reverse=True)
-    top5_prob  = prob_bets[:5]
-    top2_prob  = prob_bets[:2]
+    prob_bets = sorted(prob_bets, key=lambda x: x['model_prob'], reverse=True)
+    top5_prob = prob_bets[:5]
+    top2_prob = prob_bets[:2]
 
     def bet_table(bets):
         return pd.DataFrame([{
@@ -1229,11 +1236,11 @@ with tab4:
     def parlay_summary(top2_list, label):
         if len(top2_list) < 2:
             return
-        pp       = top2_list[0]['model_prob'] * top2_list[1]['model_prob']
-        pd_      = american_to_decimal(top2_list[0]['odds']) * american_to_decimal(top2_list[1]['odds'])
-        payout   = pd_ - 1
-        p_am     = int(payout * 100) if payout >= 1 else int(-100 / payout)
-        p_ev     = (pp * payout) - (1 - pp)
+        pp         = top2_list[0]['model_prob'] * top2_list[1]['model_prob']
+        pd_        = american_to_decimal(top2_list[0]['odds']) * american_to_decimal(top2_list[1]['odds'])
+        payout     = pd_ - 1
+        p_am       = int(payout * 100) if payout >= 1 else int(-100 / payout)
+        p_ev       = (pp * payout) - (1 - pp)
         p_kelly, _ = kelly_bet(pp, p_am, current_bankroll)
         st.markdown(f"**🎰 {label}**")
         pc1, pc2, pc3, pc4 = st.columns(4)
@@ -1426,7 +1433,6 @@ with tab4:
                     ev_daily   = ev_bets.groupby('game_date')['profit_loss'].sum()
                     prob_daily = prob_bets_hist.groupby('game_date')['profit_loss'].sum()
 
-                    # Get all unique dates across both strategies
                     all_dates = sorted(set(ev_daily.index) | set(prob_daily.index))
 
                     chart_df = pd.DataFrame(index=all_dates)
@@ -1436,31 +1442,29 @@ with tab4:
 
                     st.markdown("#### 📊 Strategy Comparison — Cumulative P&L")
 
-                    # Summary metrics side by side
                     sc1, sc2 = st.columns(2)
                     with sc1:
                         st.markdown("**🎯 EV Strategy**")
                         col_a, col_b, col_c = st.columns(3)
-                        col_a.metric("Total P&L",    f"${ev_bets['profit_loss'].sum():.2f}" if not ev_bets.empty else "$0.00")
-                        col_b.metric("Win Rate",     f"{ev_bets['bet_won'].mean():.1%}" if not ev_bets.empty else "N/A")
-                        col_c.metric("Bets Placed",  len(ev_bets) if not ev_bets.empty else 0)
+                        col_a.metric("Total P&L",   f"${ev_bets['profit_loss'].sum():.2f}" if not ev_bets.empty else "$0.00")
+                        col_b.metric("Win Rate",    f"{ev_bets['bet_won'].mean():.1%}" if not ev_bets.empty else "N/A")
+                        col_c.metric("Bets Placed", len(ev_bets) if not ev_bets.empty else 0)
                     with sc2:
                         st.markdown("**🔵 Probability Strategy**")
                         col_d, col_e, col_f = st.columns(3)
-                        col_d.metric("Total P&L",    f"${prob_bets_hist['profit_loss'].sum():.2f}" if not prob_bets_hist.empty else "$0.00")
-                        col_e.metric("Win Rate",     f"{prob_bets_hist['bet_won'].mean():.1%}" if not prob_bets_hist.empty else "N/A")
-                        col_f.metric("Bets Placed",  len(prob_bets_hist) if not prob_bets_hist.empty else 0)
+                        col_d.metric("Total P&L",   f"${prob_bets_hist['profit_loss'].sum():.2f}" if not prob_bets_hist.empty else "$0.00")
+                        col_e.metric("Win Rate",    f"{prob_bets_hist['bet_won'].mean():.1%}" if not prob_bets_hist.empty else "N/A")
+                        col_f.metric("Bets Placed", len(prob_bets_hist) if not prob_bets_hist.empty else 0)
 
                     st.line_chart(chart_df, use_container_width=True)
 
-                    # Daily breakdown table
                     st.markdown("#### Daily P&L by Strategy")
                     daily_breakdown = pd.DataFrame({
-                        'Date':                 [str(d) for d in all_dates],
-                        'EV P&L':               [f"${ev_daily.get(d, 0):.2f}" for d in all_dates],
-                        'Prob P&L':             [f"${prob_daily.get(d, 0):.2f}" for d in all_dates],
-                        'EV Cumulative':        [f"${chart_df.loc[str(d), 'EV Strategy']:.2f}" for d in all_dates],
-                        'Prob Cumulative':      [f"${chart_df.loc[str(d), 'Probability Strategy']:.2f}" for d in all_dates],
+                        'Date':           [str(d) for d in all_dates],
+                        'EV P&L':         [f"${ev_daily.get(d, 0):.2f}" for d in all_dates],
+                        'Prob P&L':       [f"${prob_daily.get(d, 0):.2f}" for d in all_dates],
+                        'EV Cumulative':  [f"${chart_df.loc[str(d), 'EV Strategy']:.2f}" for d in all_dates],
+                        'Prob Cumulative':[f"${chart_df.loc[str(d), 'Probability Strategy']:.2f}" for d in all_dates],
                     })
                     st.dataframe(daily_breakdown, use_container_width=True, hide_index=True)
 
